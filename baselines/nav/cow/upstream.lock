@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/real-stanford/cow.git",
+  "commit": "9f218e939de186cac9d7c28964a3e4ac56599216",
+  "agent": "src.models.agent_fbe_grad (CLIP-Grad ViT-B/32 with --center post-processing)",
+  "policy": "The upstream repository has no license file, so no CoW source is copied into YOR. The baseline imports an unmodified external checkout at this exact commit and only adapts the camera model, pose source, actuation, and the stop distance from outside."
+}

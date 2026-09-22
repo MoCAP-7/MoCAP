@@ -1,0 +1,1451 @@
+diff --git a/path_searching/include/path_searching/kino_astar.h b/path_searching/include/path_searching/kino_astar.h
+index 786b926..dfff1da 100644
+--- a/path_searching/include/path_searching/kino_astar.h
++++ b/path_searching/include/path_searching/kino_astar.h
+@@ -185,6 +185,8 @@ private:
+   double yaw_origin_;          // used to convert yaw to index
+   double non_siguav_;          // minimum speed considered non-zero
+   double collision_interval_;  // collision checking interval
++  bool check_inflated_occupancy_ = false;  // Also reject base centers in inflated obstacles
++  bool avoid_inflation_ = false;           // check_inflated_occupancy_ as applied to this search
+ 
+   // Commented parameters exist in the original but are unused here
+   double max_vel_;
+@@ -215,4 +217,4 @@ inline double KinoAstar::normalizeAngle(const double& angle)
+   return nor_angle;
+ }
+ }  // namespace apexnav_planner
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/path_searching/src/kino_astar.cpp b/path_searching/src/kino_astar.cpp
+index e16063f..b70ea5e 100644
+--- a/path_searching/src/kino_astar.cpp
++++ b/path_searching/src/kino_astar.cpp
+@@ -36,7 +36,7 @@ void KinoAstar::init()
+   node_->get_parameter("kino_astar.oneshot_range", oneshot_range_);
+   node_->get_parameter("kino_astar.sampletime", sampletime_);
+ 
+-  inv_yaw_resolution_ = 3.15;
++  yaw_resolution_ = 3.15;
+   inv_yaw_resolution_ = 1.0 / yaw_resolution_;
+   grid_interval_ = map_->getResolution();
+   allocate_num_ = 1000000;
+@@ -90,6 +90,10 @@ void KinoAstar::init()
+   node_->get_parameter("kino_astar.length", length_);
+   node_->get_parameter("kino_astar.width", width_);
+   node_->get_parameter("kino_astar.height", height_);
++  if (!node_->has_parameter("kino_astar.check_inflated_occupancy")) {
++    node_->declare_parameter("kino_astar.check_inflated_occupancy", false);
++  }
++  node_->get_parameter("kino_astar.check_inflated_occupancy", check_inflated_occupancy_);
+ 
+   // SE(2) motion model (x,y,yaw), suitable for nonholonomic constraints with limited turning radius
+   shotptr_s.push_back(std::make_shared<ompl::base::DubinsStateSpace>(0.2));
+@@ -140,6 +144,10 @@ int KinoAstar::search(
+   Eigen::Vector2i start_idx;
+   map_->posToIndex(start_pos2d, start_idx);
+ 
++  // A search that starts inside inflated obstacles checks the footprint only, so the robot can
++  // still plan its way out.
++  avoid_inflation_ = check_inflated_occupancy_ && map_->getInflateOccupancy(start_pos2d) != 1;
++
+   // Check whether start/end states are in collision
+   // isocc = isCollisionPosYaw(start_state.head(2), start_state[2]);
+   // if (isocc) {
+@@ -177,6 +185,11 @@ int KinoAstar::search(
+ 
+   expanded_nodes_.insert(cur_node->index, yawToIndex(start_state[2]), 0, cur_node);
+   PathNodePtr terminate_node = NULL;
++  int generated_primitive_count = 0;
++  int collision_rejection_count = 0;
++  int closed_rejection_count = 0;
++  int inserted_successor_count = 0;
++  const bool start_in_collision = isCollisionPosYaw(start_state.head(2), start_state[2]);
+   // If initial velocity is negative, do not consider direction; otherwise consider direction
+   if (cur_node->singul == 0)
+     initsearch = true;
+@@ -253,6 +266,7 @@ int KinoAstar::search(
+     }
+ 
+     for (auto& input : inputs) {
++      ++generated_primitive_count;
+       int singul;
+       if (abs(input[1]) < 1e-3)
+         singul = cur_node->singul;
+@@ -275,8 +289,10 @@ int KinoAstar::search(
+       PathNodePtr pro_node;
+       pro_node = expanded_nodes_.find(pro_id, pro_yaw_id, 0);
+ 
+-      if (pro_node != NULL && pro_node->node_state == IN_CLOSE_SET)
++      if (pro_node != NULL && pro_node->node_state == IN_CLOSE_SET) {
++        ++closed_rejection_count;
+         continue;
++      }
+ 
+       /* collision checking */
+       Eigen::Vector4d xt;
+@@ -298,8 +314,10 @@ int KinoAstar::search(
+         if (isocc)
+           break;
+       }
+-      if (isocc)
++      if (isocc) {
++        ++collision_rejection_count;
+         continue;
++      }
+       nodeVis(pro_state.head(3));
+ 
+       /* ---------- compute cost ---------- */
+@@ -326,6 +344,7 @@ int KinoAstar::search(
+ 
+         expanded_nodes_.insert(pro_id, pro_yaw_id, 0, pro_node);
+         use_node_num_ += 1;
++        ++inserted_successor_count;
+         if (use_node_num_ == allocate_num_) {
+           std::cout << "run out of memory." << std::endl;
+           return NO_PATH;
+@@ -348,7 +367,12 @@ int KinoAstar::search(
+       }
+     }
+   }
+-  std::cout << "open set empty, no path." << std::endl;
++  RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
++      "KinoSearch open set empty: start=(%.3f, %.3f, %.3f) goal=(%.3f, %.3f, %.3f) "
++      "start_collision=%s primitives=%d collision_rejects=%d closed_rejects=%d inserted=%d",
++      start_state_[0], start_state_[1], start_state_[2], end_state_[0], end_state_[1],
++      end_state_[2], start_in_collision ? "true" : "false", generated_primitive_count,
++      collision_rejection_count, closed_rejection_count, inserted_successor_count);
+   return NO_PATH;
+ }
+ 
+@@ -640,6 +664,11 @@ inline int KinoAstar::getSingularity(const double& vel)
+ 
+ bool KinoAstar::isCollisionPosYaw(const Eigen::Vector2d& pos, const double& yaw)
+ {
++  // The base center against obstacles inflated by the robot's reach beyond the footprint, as the
++  // global search and the safety check test it
++  if (avoid_inflation_ && map_->getInflateOccupancy(pos) == 1)
++    return true;
++
+   Eigen::Vector2d point;
+   uint8_t check_occ;
+   double cos_yaw = cos(yaw);
+@@ -1093,4 +1122,4 @@ void KinoAstar::kinoastarFlatPathPub(const std::vector<FlatTrajData> flat_trajs)
+   kinoastarFlatTrajPub_->publish(path);
+ }
+ 
+-}  // namespace apexnav_planner
+\ No newline at end of file
++}  // namespace apexnav_planner
+diff --git a/plan_env/include/plan_env/map_ros.h b/plan_env/include/plan_env/map_ros.h
+index cb8b1a9..65b7022 100644
+--- a/plan_env/include/plan_env/map_ros.h
++++ b/plan_env/include/plan_env/map_ros.h
+@@ -67,6 +67,7 @@ private:
+   void depthPoseCallback(  ///< Process synchronized depth image and pose data
+       const sensor_msgs::msg::Image::ConstSharedPtr& img,
+       const nav_msgs::msg::Odometry::ConstSharedPtr& pose);
++  void robotPoseCallback(const nav_msgs::msg::Odometry::ConstSharedPtr& pose);
+   void updateESDFCallback();
+   void detectedObjectCloudCallback(const plan_env::msg::MultipleMasksWithConfidence::SharedPtr msg);
+   void itmScoreCallback(const std_msgs::msg::Float64::SharedPtr msg);
+@@ -132,6 +133,7 @@ private:
+   // ROS2 subscribers for sensor data
+   rclcpp::Subscription<plan_env::msg::MultipleMasksWithConfidence>::SharedPtr detected_object_cloud_sub_;
+   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr itm_score_sub_;
++  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr robot_pose_sub_;
+ 
+   // ROS2 timers for periodic updates
+   rclcpp::TimerBase::SharedPtr esdf_timer_;
+@@ -148,6 +150,7 @@ private:
+   int skip_pixel_;                 ///< Pixel skip factor for processing efficiency
+   std::string frame_id_;           ///< Reference frame ID for published data
+   double virtual_ground_height_;   ///< Virtual ground plane offset for navigation
++  double min_object_camera_pitch_;  ///< Object clouds below this camera pitch (rad) are skipped
+ 
+   // Map state flags
+   bool local_updated_, esdf_need_update_;
+@@ -155,6 +158,8 @@ private:
+   // Current sensor data
+   Eigen::Vector3d camera_pos_;                ///< Current camera position in world frame
+   Eigen::Quaterniond camera_q_;               ///< Current camera orientation quaternion
++  Eigen::Vector2d robot_pos_ = Eigen::Vector2d::Zero();
++  bool have_robot_pose_ = false;
+   unique_ptr<cv::Mat> depth_image_;           ///< Current depth image data
+   vector<Eigen::Vector3d> proj_points_;       ///< Projected 3D points from depth image
+   int proj_points_cnt_;                       ///< Count of valid projected points
+@@ -577,4 +582,4 @@ inline void MapROS::publishUpdateRange()
+ 
+ }  // namespace apexnav_planner
+ 
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/plan_env/src/map_ros.cpp b/plan_env/src/map_ros.cpp
+index ace92cd..b69c2c6 100644
+--- a/plan_env/src/map_ros.cpp
++++ b/plan_env/src/map_ros.cpp
+@@ -86,6 +86,9 @@ void MapROS::init()
+   if (!node_->has_parameter("map_ros/virtual_ground_height")) {
+     node_->declare_parameter("map_ros/virtual_ground_height", -0.28);
+   }
++  if (!node_->has_parameter("map_ros/min_object_camera_pitch")) {
++    node_->declare_parameter("map_ros/min_object_camera_pitch", 1.5);
++  }
+ 
+   depth_filter_maxdist_ = node_->get_parameter("map_ros/depth_filter_maxdist").as_double();
+   depth_filter_mindist_ = node_->get_parameter("map_ros/depth_filter_mindist").as_double();
+@@ -96,6 +99,7 @@ void MapROS::init()
+   skip_pixel_ = node_->get_parameter("map_ros/skip_pixel").as_int();
+   frame_id_ = node_->get_parameter("map_ros/frame_id").as_string();
+   virtual_ground_height_ = node_->get_parameter("map_ros/virtual_ground_height").as_double();
++  min_object_camera_pitch_ = node_->get_parameter("map_ros/min_object_camera_pitch").as_double();
+ 
+   // Handle Habitat simulator vs real-world configuration
+   if (!node_->has_parameter("is_real_world")) {
+@@ -173,6 +177,9 @@ void MapROS::init()
+   itm_score_sub_ = node_->create_subscription<std_msgs::msg::Float64>(
+       "/blip2/cosine_score", 10,
+       std::bind(&MapROS::itmScoreCallback, this, std::placeholders::_1));
++  robot_pose_sub_ = node_->create_subscription<nav_msgs::msg::Odometry>(
++      "/map_ros/robot_pose", rclcpp::SensorDataQoS(),
++      std::bind(&MapROS::robotPoseCallback, this, std::placeholders::_1));
+ 
+   // Setup synchronized subscribers for depth image and pose data
+   rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
+@@ -192,6 +199,13 @@ void MapROS::init()
+   map_start_time_ = node_->get_clock()->now();
+ }
+ 
++void MapROS::robotPoseCallback(const nav_msgs::msg::Odometry::ConstSharedPtr& pose)
++{
++  robot_pos_(0) = pose->pose.pose.position.x;
++  robot_pos_(1) = pose->pose.pose.position.y;
++  have_robot_pose_ = true;
++}
++
+ void MapROS::visCallback()
+ {
+   // Publish all visualization topics
+@@ -228,7 +242,9 @@ void MapROS::detectedObjectCloudCallback(const plan_env::msg::MultipleMasksWithC
+   if (euler[2] < 0)
+     euler[2] += M_PI;
+   double camera_pitch = euler[2];
+-  if (camera_pitch < 1.5)  // Skip if camera not tilted down enough
++  // Skip object clouds below this pitch. The default passes only a level or
++  // upward camera; a camera mounted with a fixed downward tilt lowers it.
++  if (camera_pitch < min_object_camera_pitch_)
+     return;
+ 
+   // Backup previous over-depth object cloud for consistency tracking
+@@ -385,7 +401,8 @@ void MapROS::depthPoseCallback(
+   vector<Eigen::Vector2i> free_grids;
+   // Dilate free_grids to ensure more complete coverage
+   dilateGrids(free_grids, 1);
+-  map_->inputDepthCloud2D(filtered_depth_cloud2d_, camera_pos_, free_grids);
++  const Eigen::Vector2d clear_center = have_robot_pose_ ? robot_pos_ : camera_pos;
++  map_->inputDepthCloud2D(filtered_depth_cloud2d_, camera_pos_, clear_center, free_grids);
+   double process_time = (node_->get_clock()->now() - t1).seconds();
+   RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 50000,
+       "[Calculating Time] Grid Map process time = %.3f s", process_time);
+diff --git a/plan_env/include/plan_env/sdf_map2d.h b/plan_env/include/plan_env/sdf_map2d.h
+index cf3d8d6..ae5e882 100644
+--- a/plan_env/include/plan_env/sdf_map2d.h
++++ b/plan_env/include/plan_env/sdf_map2d.h
+@@ -47,7 +47,8 @@ public:
+   // Core map management functions
+   void initMap(rclcpp::Node::SharedPtr node);
+   void inputDepthCloud2D(const pcl::PointCloud<pcl::PointXY>::Ptr& points,
+-      const Eigen::Vector3d& camera_pos, vector<Eigen::Vector2i>& free_grids);
++      const Eigen::Vector3d& camera_pos, const Eigen::Vector2d& robot_pos,
++      vector<Eigen::Vector2i>& free_grids);
+   void inputObjectCloud2D(
+       const vector<DetectedObject>& detected_objects, vector<int>& object_cluster_ids);
+   void inputVirtualGround(const pcl::PointCloud<pcl::PointXY>::Ptr& points);
+@@ -125,6 +126,7 @@ struct MapParam2D {
+       min_occupancy_log_;  ///< Log-odds probability parameters
+   double max_ray_length_;  ///< Maximum ray length for raycasting
+   double local_bound_;     ///< Local mapping boundary limit
++  double robot_clear_radius_;  ///< Upstream footprint clearance at the odometry center
+   double unknown_flag_;    ///< Flag value for unknown regions
+   int buffer_size_;        ///< Size of map data buffers
+ };
+@@ -322,4 +324,4 @@ inline void SDFMap2D::getLocalUpdatedBox(Eigen::Vector2d& bmin, Eigen::Vector2d&
+ }
+ }  // namespace apexnav_planner
+ 
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/plan_env/src/sdf_map2d.cpp b/plan_env/src/sdf_map2d.cpp
+index 6d5e671..2b8e91a 100644
+--- a/plan_env/src/sdf_map2d.cpp
++++ b/plan_env/src/sdf_map2d.cpp
+@@ -46,6 +46,9 @@ void SDFMap2D::initMap(rclcpp::Node::SharedPtr node)
+   if (!node->has_parameter("sdf_map.local_bound")) {
+     node->declare_parameter("sdf_map.local_bound", 1.0);
+   }
++  if (!node->has_parameter("sdf_map.robot_clear_radius")) {
++    node->declare_parameter("sdf_map.robot_clear_radius", 0.0);
++  }
+   if (!node->has_parameter("sdf_map.optimistic")) {
+     node->declare_parameter("sdf_map.optimistic", true);
+   }
+@@ -59,6 +62,7 @@ void SDFMap2D::initMap(rclcpp::Node::SharedPtr node)
+   node->get_parameter("sdf_map.map_size_y", y_size);
+   node->get_parameter("sdf_map.obstacles_inflation", mp_->obstacles_inflation_);
+   node->get_parameter("sdf_map.local_bound", mp_->local_bound_);
++  node->get_parameter("sdf_map.robot_clear_radius", mp_->robot_clear_radius_);
+   node->get_parameter("sdf_map.optimistic", mp_->optimistic_);
+   node->get_parameter("sdf_map.signed_dist", mp_->signed_dist_);
+   mp_->default_dist_ = 0.0;
+@@ -219,7 +223,8 @@ void SDFMap2D::inputObjectCloud2D(
+ }
+ 
+ void SDFMap2D::inputDepthCloud2D(const pcl::PointCloud<pcl::PointXY>::Ptr& points,
+-    const Eigen::Vector3d& camera_pos, vector<Eigen::Vector2i>& free_grids)
++    const Eigen::Vector3d& camera_pos, const Eigen::Vector2d& robot_pos,
++    vector<Eigen::Vector2i>& free_grids)
+ {
+   free_grids.clear();
+   int point_num = points->points.size();
+@@ -367,6 +372,14 @@ void SDFMap2D::inputDepthCloud2D(const pcl::PointCloud<pcl::PointXY>::Ptr& point
+     }
+   }
+ 
++  // The odometry center is inside the physical robot and therefore known free,
++  // even when the forward-facing camera cannot raycast through that region.
++  if (mp_->robot_clear_radius_ > 0.0 && isInMap(robot_pos)) {
++    const Eigen::Vector2d clear_extent(mp_->robot_clear_radius_, mp_->robot_clear_radius_);
++    update_mind = update_mind.cwiseMin(robot_pos - clear_extent);
++    update_maxd = update_maxd.cwiseMax(robot_pos + clear_extent);
++  }
++
+   // Update map boundaries based on processed points
+   md_->local_update_mind_ = update_mind;
+   md_->local_update_maxd_ = update_maxd;
+@@ -410,6 +423,34 @@ void SDFMap2D::inputDepthCloud2D(const pcl::PointCloud<pcl::PointXY>::Ptr& point
+       md_->occupancy_need_clear_.push_back(addressToIdx(adr));
+     }
+   }
++
++  if (mp_->robot_clear_radius_ > 0.0 && isInMap(robot_pos)) {
++    Eigen::Vector2i clear_min, clear_max;
++    const Eigen::Vector2d clear_extent(mp_->robot_clear_radius_, mp_->robot_clear_radius_);
++    posToIndex(robot_pos - clear_extent, clear_min);
++    posToIndex(robot_pos + clear_extent, clear_max);
++    boundIndex(clear_min);
++    boundIndex(clear_max);
++    const double radius_squared = mp_->robot_clear_radius_ * mp_->robot_clear_radius_;
++    for (int x = clear_min.x(); x <= clear_max.x(); ++x) {
++      for (int y = clear_min.y(); y <= clear_max.y(); ++y) {
++        const Eigen::Vector2i clear_idx(x, y);
++        Eigen::Vector2d clear_pos;
++        indexToPos(clear_idx, clear_pos);
++        if ((clear_pos - robot_pos).squaredNorm() > radius_squared)
++          continue;
++        const int adr = toAddress(clear_idx);
++        if (md_->occupancy_buffer_[adr] > mp_->min_occupancy_log_)
++          md_->occupancy_need_clear_.push_back(clear_idx);
++        md_->occupancy_buffer_[adr] = mp_->clamp_min_log_;
++        if (!flag_free.count(adr)) {
++          flag_free[adr] = 1;
++          free_grids.push_back(clear_idx);
++        }
++      }
++    }
++  }
++
+ }
+ 
+ void SDFMap2D::setForceOccGrid(const Eigen::Vector2d& pos)
+diff --git a/trajectory_manager/src/traj_server.cpp b/trajectory_manager/src/traj_server.cpp
+index 9d62873..8a9ab33 100644
+--- a/trajectory_manager/src/traj_server.cpp
++++ b/trajectory_manager/src/traj_server.cpp
+@@ -7,6 +7,7 @@
+ #include <nav_msgs/msg/odometry.hpp>
+ #include <visualization_msgs/msg/marker.hpp>
+ #include <std_msgs/msg/empty.hpp>
++#include <std_msgs/msg/bool.hpp>
+ #include <std_msgs/msg/float32.hpp>
+ #include "controller/mpc.h"
+ 
+@@ -42,12 +43,17 @@ public:
+     if (!this->has_parameter("mpc.dt")) {
+       this->declare_parameter("mpc.dt", -1.0);
+     }
++    if (!this->has_parameter("initial_rotation_timeout_s")) {
++      this->declare_parameter("initial_rotation_timeout_s", 50.0);
++    }
+ 
+     bool need_init = this->get_parameter("need_init").as_bool();
+     max_correction_vel_ = this->get_parameter("max_correction_vel").as_double();
+     max_correction_omega_ = this->get_parameter("max_correction_omega").as_double();
+     mpc_N_ = this->get_parameter("mpc.predict_steps").as_int();
+     mpc_dt_ = this->get_parameter("mpc.dt").as_double();
++    initial_rotation_timeout_s_ =
++        this->get_parameter("initial_rotation_timeout_s").as_double();
+ 
+     // Create subscriptions
+     traj_sub_ = this->create_subscription<trajectory_manager::msg::PolyTraj>(
+@@ -68,6 +74,8 @@ public:
+     vel_cmd_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
+     traj_vis_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/travel_traj", 10);
+     current_desire_pub_ = this->create_publisher<geometry_msgs::msg::Pose>("/current_desire", 10);
++    initial_scan_status_pub_ = this->create_publisher<std_msgs::msg::Bool>(
++        "initial_scan_status", rclcpp::QoS(1).reliable().transient_local());
+ 
+     // Create timers
+     vis_timer_ = this->create_wall_timer(200ms, std::bind(&TrajectoryServer::visCallback, this));
+@@ -93,21 +101,46 @@ public:
+       init_rotation_started_ = false;
+       rotation_accum_ = 0.0;
+       last_odom_yaw_ = 0.0;
+-      init_cmd_timer_ = this->create_wall_timer(100ms,
++      init_started_at_ = std::chrono::steady_clock::now();
++      init_cmd_timer_ = this->create_wall_timer(50ms,
+           std::bind(&TrajectoryServer::initCmdCallback, this));
++    } else {
++      publishInitialScanStatus(true);
+     }
+   }
+ 
++  void publishInitialScanStatus(bool success)
++  {
++    std_msgs::msg::Bool status;
++    status.data = success;
++    initial_scan_status_pub_->publish(status);
++  }
++
+   void initCmdCallback()
+   {
+     geometry_msgs::msg::Twist twist_msg;
+     switch (init_state_) {
+       case 0: {
++        const double elapsed = std::chrono::duration<double>(
++            std::chrono::steady_clock::now() - init_started_at_).count();
++        if (elapsed >= initial_rotation_timeout_s_) {
++          vel_cmd_pub_->publish(twist_msg);
++          publishInitialScanStatus(false);
++          init_state_ = 2;
++          init_cmd_timer_->cancel();
++          RCLCPP_ERROR(this->get_logger(),
++              "[traj_server] Initial mapping rotation timed out after %.1f s at "
++              "%.2f rad (%.1f deg); stopping.",
++              elapsed, rotation_accum_, rotation_accum_ * 180.0 / M_PI);
++          return;
++        }
+         // Prefer odom-based rotation stop: accumulate yaw change from odom
+         if (have_odom_) {
+           if (!init_rotation_started_) {
+             last_odom_yaw_ = odom_yaw_;
+             rotation_accum_ = 0.0;
++            // Do not spend the motion budget while waiting for the first odom.
++            init_started_at_ = std::chrono::steady_clock::now();
+             init_rotation_started_ = true;
+           }
+ 
+@@ -119,12 +152,19 @@ public:
+           double delta = atan2(sin(odom_yaw_ - last_odom_yaw_), cos(odom_yaw_ - last_odom_yaw_));
+           rotation_accum_ += fabs(delta);
+           last_odom_yaw_ = odom_yaw_;
++          RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
++              "[traj_server] Initial rotation progress: %.2f / %.2f rad (%.0f%%).",
++              rotation_accum_, 2.0 * M_PI,
++              100.0 * rotation_accum_ / (2.0 * M_PI));
+ 
+           // Stop after approximately one full rotation
+           if (rotation_accum_ >= 2.0 * M_PI - 0.05) {
+             twist_msg.angular.z = 0.0;
+             vel_cmd_pub_->publish(twist_msg);
++            publishInitialScanStatus(true);
+             init_state_++;
++            RCLCPP_INFO(this->get_logger(),
++                "[traj_server] Initial 360-degree mapping rotation complete.");
+           }
+         }
+         else {
+@@ -213,6 +253,14 @@ public:
+   void stopCallback(const std_msgs::msg::Empty::SharedPtr msg)
+   {
+     (void)msg;
++    // A failed first plan publishes an emergency stop before this server has
++    // received any trajectory. In that case start_time_ still uses its
++    // default clock type, and subtracting it from the node clock aborts ROS2.
++    if (!receive_traj_) {
++      geometry_msgs::msg::Twist twist_msg;
++      vel_cmd_pub_->publish(twist_msg);
++      return;
++    }
+     // Immediate emergency stop
+     rclcpp::Time time_now = this->get_clock()->now();
+     double t_stop = (time_now - start_time_).seconds();
+@@ -412,6 +460,7 @@ private:
+   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr robot_marker_pub_;
+   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr traj_vis_pub_;
+   rclcpp::Publisher<geometry_msgs::msg::Pose>::SharedPtr current_desire_pub_;
++  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr initial_scan_status_pub_;
+ 
+   rclcpp::TimerBase::SharedPtr cmd_timer_;
+   rclcpp::TimerBase::SharedPtr vis_timer_;
+@@ -447,6 +496,8 @@ private:
+   bool init_rotation_started_;
+   double rotation_accum_;  // accumulated absolute yaw change (rad)
+   double last_odom_yaw_;   // last odom yaw used for accumulation
++  std::chrono::steady_clock::time_point init_started_at_;
++  double initial_rotation_timeout_s_;
+   double max_correction_vel_, max_correction_omega_;
+   bool need_init_;
+ };
+diff --git a/trajectory_manager/include/trajectory_manager/optimizer.h b/trajectory_manager/include/trajectory_manager/optimizer.h
+index 6d1a7ae..7721dfa 100644
+--- a/trajectory_manager/include/trajectory_manager/optimizer.h
++++ b/trajectory_manager/include/trajectory_manager/optimizer.h
+@@ -26,6 +26,7 @@
+ #include "gcopter/minco.hpp"
+ #include "gcopter/firi.hpp"
+ #include "gcopter/sfc_gen.hpp"
++#include "trajectory_manager/platform_time_scale.hpp"
+ 
+ #define uint unsigned int
+ namespace apexnav_planner {
+@@ -43,6 +44,13 @@
+   int sparseResolution_;
+   double timeResolution_;
+ 
++  // Uniform time scaling of the optimized trajectory to platform limits
++  bool time_scale_to_limits_;
++  double time_scale_max_vel_;
++  double time_scale_max_omega_;
++  double time_scale_sample_dt_;
++  double time_scale_min_speed_;
++
+   Config(rclcpp::Node::SharedPtr node)
+   {
+     if (!node->has_parameter("optimizer.max_vel")) {
+@@ -72,6 +80,23 @@
+     if (!node->has_parameter("optimizer.timeResolution")) {
+       node->declare_parameter("optimizer.timeResolution", 1.0);
+     }
++    // A non-positive time_scale_max_vel falls back to max_vel; a non-positive
++    // time_scale_max_omega leaves heading rate out of the scale.
++    if (!node->has_parameter("optimizer.time_scale_to_limits")) {
++      node->declare_parameter("optimizer.time_scale_to_limits", false);
++    }
++    if (!node->has_parameter("optimizer.time_scale_max_vel")) {
++      node->declare_parameter("optimizer.time_scale_max_vel", 0.0);
++    }
++    if (!node->has_parameter("optimizer.time_scale_max_omega")) {
++      node->declare_parameter("optimizer.time_scale_max_omega", 0.0);
++    }
++    if (!node->has_parameter("optimizer.time_scale_sample_dt")) {
++      node->declare_parameter("optimizer.time_scale_sample_dt", 0.002);
++    }
++    if (!node->has_parameter("optimizer.time_scale_min_speed")) {
++      node->declare_parameter("optimizer.time_scale_min_speed", 0.05);
++    }
+ 
+     node->get_parameter("optimizer.max_vel", max_vel_);
+     node->get_parameter("optimizer.max_acc", max_acc_);
+@@ -82,6 +107,11 @@
+     node->get_parameter("optimizer.denseResolution", denseResolution_);
+     node->get_parameter("optimizer.sparseResolution", sparseResolution_);
+     node->get_parameter("optimizer.timeResolution", timeResolution_);
++    node->get_parameter("optimizer.time_scale_to_limits", time_scale_to_limits_);
++    node->get_parameter("optimizer.time_scale_max_vel", time_scale_max_vel_);
++    node->get_parameter("optimizer.time_scale_max_omega", time_scale_max_omega_);
++    node->get_parameter("optimizer.time_scale_sample_dt", time_scale_sample_dt_);
++    node->get_parameter("optimizer.time_scale_min_speed", time_scale_min_speed_);
+   }
+ };
+ 
+@@ -226,10 +256,60 @@
+ 
+     optimizer();
+     visFinalInnerPoints();
++    if (final_trajes.empty()) {
++      RCLCPP_ERROR(node_->get_logger(), "The optimizer produced no trajectory");
++      return;
++    }
++    Trajectory<7, 3> traj = final_trajes[0];
++    if (config_.time_scale_to_limits_) {
++      // Only the executed trajectory is retimed; final_trajes stays as optimized for mincoPathPub.
++      PlatformLimits limits;
++      limits.max_vel =
++          config_.time_scale_max_vel_ > 0.0 ? config_.time_scale_max_vel_ : config_.max_vel_;
++      limits.max_acc = config_.max_acc_;
++      limits.max_omega = config_.time_scale_max_omega_;
++      limits.max_domega = config_.max_domega_;
++      PlatformRetimeOptions options;
++      options.sample_dt = config_.time_scale_sample_dt_;
++      options.min_speed = config_.time_scale_min_speed_;
++      PlatformRetime retime;
++      const Trajectory<7, 3> retimed = retimeToPlatformLimits(traj, limits, options, &retime);
++      const bool within =
++          (limits.max_vel <= 0.0 || retime.after.vel <= limits.max_vel * 1.01) &&
++          (limits.max_omega <= 0.0 || retime.after.omega <= limits.max_omega * 1.01);
++      if (retime.pieces_after > 0 && std::isfinite(retime.duration_after) && within) {
++        RCLCPP_INFO(node_->get_logger(),
++            "[time scale] retimed, duration %.2f -> %.2f s, pieces %d -> %d, start speed %.3f -> %.3f, "
++            "vel %.3f -> %.3f, acc %.3f -> %.3f, omega %.3f -> %.3f, domega %.3f -> %.3f",
++            retime.duration_before, retime.duration_after, retime.pieces_before,
++            retime.pieces_after, retime.start_speed_before, retime.start_speed_after,
++            retime.before.vel, retime.after.vel, retime.before.acc, retime.after.acc,
++            retime.before.omega, retime.after.omega, retime.before.domega, retime.after.domega);
++        traj = retimed;
++      }
++      else {
++        // Uniform scaling is slower but has no pieces to build.
++        PlatformTimeScale scale;
++        const Trajectory<7, 3> scaled = scaleToPlatformLimits(
++            traj, limits, config_.time_scale_sample_dt_, config_.time_scale_min_speed_, 3, &scale);
++        if (std::isfinite(scale.k) && std::isfinite(scaled.getTotalDuration())) {
++          RCLCPP_WARN(node_->get_logger(),
++              "[time scale] retiming failed (pieces %d, duration %f, vel %.3f, omega %.3f); "
++              "scaled uniformly by k %.3f (%s)",
++              retime.pieces_after, retime.duration_after, retime.after.vel, retime.after.omega,
++              scale.k, scale.binding);
++          traj = scaled;
++        }
++        else {
++          RCLCPP_WARN(node_->get_logger(),
++              "[time scale] non-finite scale %f; keeping the optimized trajectory", scale.k);
++        }
++      }
++    }
+     local_trajectory_.traj_id++;
+     local_trajectory_.start_time = node_->get_clock()->now();
+-    local_trajectory_.duration = final_trajes[0].getTotalDuration();
+-    local_trajectory_.traj = final_trajes[0];
++    local_trajectory_.duration = traj.getTotalDuration();
++    local_trajectory_.traj = traj;
+   }
+ 
+   inline void getState()
+diff --git a/trajectory_manager/include/trajectory_manager/platform_time_scale.hpp b/trajectory_manager/include/trajectory_manager/platform_time_scale.hpp
+new file mode 100644
+index 0000000..f6f687f
+--- /dev/null
++++ b/trajectory_manager/include/trajectory_manager/platform_time_scale.hpp
+@@ -0,0 +1,452 @@
++#ifndef _PLATFORM_TIME_SCALE_HPP_
++#define _PLATFORM_TIME_SCALE_HPP_
++
++#include <algorithm>
++#include <cmath>
++#include <vector>
++
++#include "gcopter/trajectory.hpp"
++
++namespace apexnav_planner {
++// Uniform time scaling of an optimized trajectory to platform limits. q(t) = p(t / k)
++// traces the same path: speed and heading rate scale by 1 / k, acceleration and heading
++// acceleration by 1 / k^2.
++
++// A non-positive limit disables its term.
++struct PlatformLimits {
++  double max_vel = 0.0;
++  double max_acc = 0.0;
++  double max_omega = 0.0;
++  double max_domega = 0.0;
++};
++
++struct PlatformPeaks {
++  double vel = 0.0;
++  double acc = 0.0;
++  double omega = 0.0;
++  double domega = 0.0;
++};
++
++struct PlatformTimeScale {
++  double k = 1.0;
++  const char* binding = "none";
++  PlatformPeaks before;
++  PlatformPeaks after;
++};
++
++// Planar peaks sampled every sample_dt. Heading is undefined at rest, so heading rate and
++// heading acceleration use the optimizer's heading penalty expressions only where the planar
++// speed exceeds min_speed.
++inline PlatformPeaks measurePlatformPeaks(
++    const Trajectory<7, 3>& traj, double sample_dt, double min_speed)
++{
++  PlatformPeaks peaks;
++  Eigen::Matrix2d B_h;
++  B_h << 0.0, -1.0, 1.0, 0.0;
++  for (int i = 0; i < traj.getPieceNum(); ++i) {
++    const double duration = traj[i].getDuration();
++    int steps = 1;
++    if (sample_dt > 0.0 && duration > sample_dt) {
++      steps = static_cast<int>(std::ceil(duration / sample_dt));
++    }
++    for (int s = 0; s <= steps; ++s) {
++      const double t = duration * s / steps;
++      const Eigen::Vector2d v = traj[i].getVel(t).head(2);
++      const Eigen::Vector2d a = traj[i].getAcc(t).head(2);
++      const double speed = v.norm();
++      peaks.vel = std::max(peaks.vel, speed);
++      peaks.acc = std::max(peaks.acc, a.norm());
++      if (speed <= min_speed) continue;
++      const Eigen::Vector2d j = traj[i].getJer(t).head(2);
++      const double inv_v2 = 1.0 / (speed * speed);
++      const double cross_va = a.dot(B_h * v);
++      peaks.omega = std::max(peaks.omega, std::abs(cross_va * inv_v2));
++      peaks.domega = std::max(peaks.domega,
++          std::abs(j.dot(B_h * v) * inv_v2 - 2.0 * cross_va * a.dot(v) * inv_v2 * inv_v2));
++    }
++  }
++  return peaks;
++}
++
++// Smallest k >= 1 that brings every peak within its limit; binding names the term that sets k.
++inline double platformTimeScale(
++    const PlatformPeaks& peaks, const PlatformLimits& limits, const char** binding)
++{
++  double k = 1.0;
++  const char* name = "none";
++  auto consider = [&](double candidate, const char* term) {
++    if (candidate > k) {
++      k = candidate;
++      name = term;
++    }
++  };
++  if (limits.max_vel > 0.0) consider(peaks.vel / limits.max_vel, "vel");
++  if (limits.max_omega > 0.0) consider(peaks.omega / limits.max_omega, "yaw_rate");
++  if (limits.max_acc > 0.0) consider(std::sqrt(peaks.acc / limits.max_acc), "acc");
++  if (limits.max_domega > 0.0) consider(std::sqrt(peaks.domega / limits.max_domega), "yaw_acc");
++  if (binding != nullptr) *binding = name;
++  return k;
++}
++
++inline Trajectory<7, 3> scaleTrajectoryTime(const Trajectory<7, 3>& traj, double k)
++{
++  std::vector<double> durations;
++  std::vector<Piece<7, 3>::CoefficientMat> coefficients;
++  durations.reserve(traj.getPieceNum());
++  coefficients.reserve(traj.getPieceNum());
++  for (int i = 0; i < traj.getPieceNum(); ++i) {
++    // Column j multiplies t^(7 - j).
++    Piece<7, 3>::CoefficientMat coefficient = traj[i].getCoeffMat();
++    for (int j = 0; j < 8; ++j) coefficient.col(j) /= std::pow(k, 7 - j);
++    durations.push_back(traj[i].getDuration() * k);
++    coefficients.push_back(coefficient);
++  }
++  return Trajectory<7, 3>(durations, coefficients);
++}
++
++// Scales traj until its sampled peaks fit limits. The scaled trajectory is re-measured four
++// times more densely, so a narrow heading-rate spike that fell between the first samples still
++// enlarges k.
++inline Trajectory<7, 3> scaleToPlatformLimits(const Trajectory<7, 3>& traj,
++    const PlatformLimits& limits, double sample_dt, double min_speed, int max_refinements,
++    PlatformTimeScale* report)
++{
++  PlatformTimeScale result;
++  result.before = measurePlatformPeaks(traj, sample_dt, min_speed);
++  result.k = platformTimeScale(result.before, limits, &result.binding);
++  Trajectory<7, 3> scaled = result.k > 1.0 ? scaleTrajectoryTime(traj, result.k) : traj;
++  result.after = measurePlatformPeaks(scaled, sample_dt * result.k / 4.0, min_speed / result.k);
++  for (int refinement = 0; refinement < max_refinements; ++refinement) {
++    const char* residual_binding = "none";
++    const double residual = platformTimeScale(result.after, limits, &residual_binding);
++    if (!(residual > 1.0 + 1e-9)) break;
++    result.k *= residual;
++    result.binding = residual_binding;
++    scaled = scaleTrajectoryTime(traj, result.k);
++    result.after = measurePlatformPeaks(scaled, sample_dt * result.k / 4.0, min_speed / result.k);
++  }
++  if (report != nullptr) *report = result;
++  return scaled;
++}
++
++// Retiming q(t) = p(tau(t)) also traces the same path, but the rate r = dtau/dt varies along it:
++// speed and heading rate scale by r, and acceleration and heading acceleration take a term in
++// r^2 plus one in dr/dt. The trajectory reaches the limits as soon as the acceleration limits
++// allow, instead of stretching the optimizer's own ramps by a single factor.
++
++struct PlatformRetimeOptions {
++  // Spacing of the samples along the input, in input time.
++  double sample_dt = 0.002;
++  // Heading terms divide by the squared input speed, but by at least this speed squared.
++  double min_speed = 0.05;
++  // The result is built from pieces of constant rate. A piece is at most this much slower in
++  // speed and in heading rate than the retimed profile at its samples, which also bounds the
++  // velocity steps between pieces.
++  double speed_step = 0.002;
++  double yaw_rate_step = 0.005;
++  double max_piece_duration = 1.0;
++};
++
++struct PlatformRetime {
++  PlatformPeaks before;
++  // Speed and heading rate as sampled; acceleration and heading acceleration as differences
++  // over a window of several pieces, so the steps between pieces average out.
++  PlatformPeaks after;
++  double duration_before = 0.0;
++  double duration_after = 0.0;
++  double start_speed_before = 0.0;
++  double start_speed_after = 0.0;
++  int pieces_before = 0;
++  int pieces_after = 0;
++};
++
++namespace platform_retime_detail {
++constexpr double kRest = 1e-9;
++constexpr double kMinRate = 1e-3;
++
++inline double cross2(const Eigen::Vector2d& a, const Eigen::Vector2d& b)
++{
++  return a.x() * b.y() - a.y() * b.x();
++}
++
++// Input quantities at one sample, per unit input time.
++struct Sample {
++  int piece = 0;
++  double sigma = 0.0;       // time within the piece
++  double tau = 0.0;         // time from the trajectory start
++  double speed = 0.0;       // |v|
++  double tangential = 0.0;  // a . v / |v|
++  double normal = 0.0;      // |v x a| / |v|, or |a| at rest
++  double yaw_rate = 0.0;    // (v x a) / max(|v|, min_speed)^2
++  double yaw_acc = 0.0;     // its derivative
++  double cap = 1.0;         // largest x = r^2 whose limits hold for some dx/dtau
++};
++
++// Range of s = dx/dtau at x that keeps acceleration and heading acceleration within limits:
++// a_tangential = tangential x + speed s / 2, a_normal = normal x and
++// heading acceleration = yaw_acc x + yaw_rate s / 2. False if no s does.
++inline bool slopeRange(
++    const Sample& sample, double x, const PlatformLimits& limits, double* low, double* high)
++{
++  *low = -std::numeric_limits<double>::infinity();
++  *high = std::numeric_limits<double>::infinity();
++  if (limits.max_acc > 0.0) {
++    const double normal = sample.normal * x;
++    if (normal > limits.max_acc) return false;
++    const double reserve = std::sqrt(limits.max_acc * limits.max_acc - normal * normal);
++    const double tangential = sample.tangential * x;
++    if (sample.speed > kRest) {
++      *low = std::max(*low, 2.0 * (-reserve - tangential) / sample.speed);
++      *high = std::min(*high, 2.0 * (reserve - tangential) / sample.speed);
++    }
++    else if (std::abs(tangential) > reserve) {
++      return false;
++    }
++  }
++  if (limits.max_domega > 0.0) {
++    const double drift = sample.yaw_acc * x;
++    if (std::abs(sample.yaw_rate) > kRest) {
++      double a = 2.0 * (-limits.max_domega - drift) / sample.yaw_rate;
++      double b = 2.0 * (limits.max_domega - drift) / sample.yaw_rate;
++      if (a > b) std::swap(a, b);
++      *low = std::max(*low, a);
++      *high = std::min(*high, b);
++    }
++    else if (std::abs(drift) > limits.max_domega) {
++      return false;
++    }
++  }
++  return *low <= *high;
++}
++
++// Largest x in [0, upper] with accept(x), for an accept that holds on an interval containing 0.
++template <typename Accept>
++inline double largestAccepted(double upper, const Accept& accept)
++{
++  if (accept(upper)) return upper;
++  double accepted = 0.0, rejected = upper;
++  for (int iteration = 0; iteration < 60; ++iteration) {
++    const double middle = 0.5 * (accepted + rejected);
++    if (accept(middle))
++      accepted = middle;
++    else
++      rejected = middle;
++  }
++  return accepted;
++}
++
++inline Sample makeSample(const Piece<7, 3>& piece, int index, double sigma, double tau,
++    const PlatformLimits& limits, double min_speed)
++{
++  Sample sample;
++  sample.piece = index;
++  sample.sigma = sigma;
++  sample.tau = tau;
++  const Eigen::Vector2d v = piece.getVel(sigma).head(2);
++  const Eigen::Vector2d a = piece.getAcc(sigma).head(2);
++  const Eigen::Vector2d j = piece.getJer(sigma).head(2);
++  const double cross_va = cross2(v, a);
++  sample.speed = v.norm();
++  if (sample.speed > kRest) {
++    sample.tangential = a.dot(v) / sample.speed;
++    sample.normal = std::abs(cross_va) / sample.speed;
++  }
++  else {
++    sample.normal = a.norm();
++  }
++  const double v2 = sample.speed * sample.speed;
++  const double floor2 = std::max(min_speed * min_speed, kRest);
++  if (v2 > floor2) {
++    sample.yaw_rate = cross_va / v2;
++    sample.yaw_acc = cross2(v, j) / v2 - 2.0 * cross_va * a.dot(v) / (v2 * v2);
++  }
++  else {
++    sample.yaw_rate = cross_va / floor2;
++    sample.yaw_acc = cross2(v, j) / floor2;
++  }
++
++  double cap = 1.0;
++  if (limits.max_vel > 0.0 && sample.speed > kRest)
++    cap = std::min(cap, std::pow(limits.max_vel / sample.speed, 2));
++  if (limits.max_omega > 0.0 && std::abs(sample.yaw_rate) > kRest)
++    cap = std::min(cap, std::pow(limits.max_omega / std::abs(sample.yaw_rate), 2));
++  sample.cap = largestAccepted(cap, [&](double x) {
++    double low, high;
++    return slopeRange(sample, x, limits, &low, &high);
++  });
++  return sample;
++}
++
++// Coefficients of p(sigma + rate t) for a piece p. Column j multiplies t^(7 - j).
++inline Piece<7, 3>::CoefficientMat subPieceCoefficients(
++    const Piece<7, 3>::CoefficientMat& coefficients, double sigma, double rate)
++{
++  Piece<7, 3>::CoefficientMat result = Piece<7, 3>::CoefficientMat::Zero();
++  for (int m = 0; m <= 7; ++m) {
++    // (sigma + rate t)^m = sum over n of C(m, n) sigma^(m - n) rate^n t^n
++    double choose = 1.0;
++    for (int n = 0; n <= m; ++n) {
++      result.col(7 - n) +=
++          coefficients.col(7 - m) * (choose * std::pow(sigma, m - n) * std::pow(rate, n));
++      choose = choose * (m - n) / (n + 1);
++    }
++  }
++  return result;
++}
++
++inline PlatformPeaks measureRetimedPeaks(
++    const Trajectory<7, 3>& traj, const std::vector<double>& rates, double min_speed)
++{
++  const double sample_dt = 0.01;
++  const double window = 0.2;
++  PlatformPeaks peaks;
++  std::vector<double> times, speeds, turns;
++  double start = 0.0;
++  for (int i = 0; i < traj.getPieceNum(); ++i) {
++    const double duration = traj[i].getDuration();
++    const int steps = std::max(1, static_cast<int>(std::ceil(duration / sample_dt)));
++    const double floor2 = std::max(std::pow(min_speed * rates[i], 2), kRest);
++    for (int s = 0; s <= steps; ++s) {
++      const double t = duration * s / steps;
++      const Eigen::Vector2d v = traj[i].getVel(t).head(2);
++      const Eigen::Vector2d a = traj[i].getAcc(t).head(2);
++      const double speed = v.norm();
++      const double turn = cross2(v, a) / std::max(speed * speed, floor2);
++      times.push_back(start + t);
++      speeds.push_back(speed);
++      turns.push_back(turn);
++      peaks.vel = std::max(peaks.vel, speed);
++      peaks.omega = std::max(peaks.omega, std::abs(turn));
++    }
++    start += duration;
++  }
++  size_t later = 0;
++  for (size_t i = 0; i < times.size(); ++i) {
++    while (later < times.size() && times[later] < times[i] + window) ++later;
++    if (later == times.size()) break;
++    const double dt = times[later] - times[i];
++    const double tangential = (speeds[later] - speeds[i]) / dt;
++    peaks.acc = std::max(peaks.acc, std::hypot(tangential, std::abs(turns[i]) * speeds[i]));
++    peaks.domega = std::max(peaks.domega, std::abs(turns[later] - turns[i]) / dt);
++  }
++  return peaks;
++}
++}  // namespace platform_retime_detail
++
++// Retimes traj along its own path to the limits. On samples of the input, a backward pass lowers
++// x = r^2 wherever the trajectory could not otherwise slow down in time, and a forward pass from
++// the start raises it as fast as the acceleration limits allow; x is linear in tau between
++// samples. r never exceeds 1, so the result is never faster than the input, and the start
++// velocity is kept unless it exceeds a limit. The result is cut from the input pieces into
++// pieces of constant rate, so its positions are the input's.
++inline Trajectory<7, 3> retimeToPlatformLimits(const Trajectory<7, 3>& traj,
++    const PlatformLimits& limits, const PlatformRetimeOptions& options, PlatformRetime* report)
++{
++  using namespace platform_retime_detail;
++  PlatformRetime result;
++  const int piece_num = traj.getPieceNum();
++  result.pieces_before = piece_num;
++  result.duration_before = traj.getTotalDuration();
++  result.before = measurePlatformPeaks(traj, options.sample_dt, options.min_speed);
++  if (piece_num == 0) {
++    if (report != nullptr) *report = result;
++    return traj;
++  }
++  result.start_speed_before = traj.getVel(0.0).head(2).norm();
++
++  std::vector<Sample> samples;
++  std::vector<int> first_sample(piece_num + 1);
++  double piece_start = 0.0;
++  for (int i = 0; i < piece_num; ++i) {
++    const double duration = traj[i].getDuration();
++    int steps = 1;
++    if (options.sample_dt > 0.0 && duration > options.sample_dt)
++      steps = static_cast<int>(std::ceil(duration / options.sample_dt));
++    first_sample[i] = static_cast<int>(samples.size());
++    for (int s = 0; s < steps; ++s) {
++      const double sigma = duration * s / steps;
++      samples.push_back(
++          makeSample(traj[i], i, sigma, piece_start + sigma, limits, options.min_speed));
++    }
++    piece_start += duration;
++  }
++  samples.push_back(makeSample(traj[piece_num - 1], piece_num - 1,
++      traj[piece_num - 1].getDuration(), piece_start, limits, options.min_speed));
++  first_sample[piece_num] = static_cast<int>(samples.size()) - 1;
++  const int last = first_sample[piece_num];
++
++  std::vector<double> bound(samples.size());
++  bound[last] = samples[last].cap;
++  for (int k = last - 1; k >= 0; --k) {
++    const double step = samples[k + 1].tau - samples[k].tau;
++    bound[k] = largestAccepted(samples[k].cap, [&](double x) {
++      double low, high;
++      if (!slopeRange(samples[k], x, limits, &low, &high)) return false;
++      return step <= 0.0 ? x <= bound[k + 1] : x + step * low <= bound[k + 1];
++    });
++  }
++  std::vector<double> rate(samples.size());
++  double x = bound[0];
++  rate[0] = std::max(std::sqrt(x), kMinRate);
++  for (int k = 0; k < last; ++k) {
++    const double step = samples[k + 1].tau - samples[k].tau;
++    double low, high;
++    slopeRange(samples[k], x, limits, &low, &high);
++    double next = bound[k + 1];
++    if (step > 0.0 && std::isfinite(high)) next = std::min(next, x + step * high);
++    x = std::max(next, 0.0);
++    rate[k + 1] = std::max(std::sqrt(x), kMinRate);
++  }
++
++  std::vector<double> durations, rates;
++  std::vector<Piece<7, 3>::CoefficientMat> coefficients;
++  for (int i = 0; i < piece_num; ++i) {
++    const int end = first_sample[i + 1];
++    int begin = first_sample[i];
++    while (begin < end) {
++      double low = std::min(rate[begin], rate[begin + 1]);
++      double high = std::max(rate[begin], rate[begin + 1]);
++      double speed = std::max(samples[begin].speed, samples[begin + 1].speed);
++      double turn = std::max(std::abs(samples[begin].yaw_rate), std::abs(samples[begin + 1].yaw_rate));
++      int stop = begin + 1;
++      while (stop < end) {
++        const double next_low = std::min(low, rate[stop + 1]);
++        const double next_high = std::max(high, rate[stop + 1]);
++        const double next_speed = std::max(speed, samples[stop + 1].speed);
++        const double next_turn = std::max(turn, std::abs(samples[stop + 1].yaw_rate));
++        const double spread = next_high - next_low;
++        if (next_speed * spread > options.speed_step || next_turn * spread > options.yaw_rate_step ||
++            (samples[stop + 1].tau - samples[begin].tau) / next_low > options.max_piece_duration)
++          break;
++        low = next_low;
++        high = next_high;
++        speed = next_speed;
++        turn = next_turn;
++        ++stop;
++      }
++      const double sigma_begin = samples[begin].sigma;
++      const double sigma_end = stop == end ? traj[i].getDuration() : samples[stop].sigma;
++      if (sigma_end > sigma_begin) {
++        durations.push_back((sigma_end - sigma_begin) / low);
++        coefficients.push_back(subPieceCoefficients(traj[i].getCoeffMat(), sigma_begin, low));
++        rates.push_back(low);
++      }
++      begin = stop;
++    }
++  }
++  if (durations.empty()) {
++    if (report != nullptr) *report = result;
++    return traj;
++  }
++
++  Trajectory<7, 3> retimed(durations, coefficients);
++  result.pieces_after = retimed.getPieceNum();
++  result.duration_after = retimed.getTotalDuration();
++  result.start_speed_after = retimed.getVel(0.0).head(2).norm();
++  result.after = measureRetimedPeaks(retimed, rates, options.min_speed);
++  if (report != nullptr) *report = result;
++  return retimed;
++}
++}  // namespace apexnav_planner
++
++#endif
+diff --git a/exploration_manager/include/exploration_manager/exploration_data.h b/exploration_manager/include/exploration_manager/exploration_data.h
+index d0f58c2..b741a07 100644
+--- a/exploration_manager/include/exploration_manager/exploration_data.h
++++ b/exploration_manager/include/exploration_manager/exploration_data.h
+@@ -81,6 +81,7 @@ struct FSMData {
+ 
+   Eigen::Vector2d local_pos_;
+   LocalTrajectory newest_traj_;  // Store latest planned trajectory
++  LocalTrajectory executing_traj_;  // Trajectory last published to the trajectory server
+ };
+ 
+ struct FSMParam {
+@@ -91,6 +92,10 @@ struct FSMParam {
+     replan_traj_end_threshold_ = 1.0;
+     replan_frontier_change_delay_ = 0.5;
+     replan_timeout_ = 2.0;
++    adaptive_replan_time_ = false;
++    replan_time_margin_ = 0.5;
++    max_replan_time_ = 8.0;
++    max_replan_overrun_ = 0.5;
+ 
+     const double step_length = 0.25;
+     const double angle_increment = M_PI / 6;
+@@ -108,6 +113,11 @@ struct FSMParam {
+   double replan_traj_end_threshold_;
+   double replan_frontier_change_delay_;
+   double replan_timeout_;
++  // Predict moving replans as far ahead as recent plans took instead of replan_time_
++  bool adaptive_replan_time_;
++  double replan_time_margin_;
++  double max_replan_time_;
++  double max_replan_overrun_;
+ };
+ 
+ struct ExplorationData {
+diff --git a/exploration_manager/include/exploration_manager/exploration_fsm_traj.h b/exploration_manager/include/exploration_manager/exploration_fsm_traj.h
+index cc83a8e..13882a8 100644
+--- a/exploration_manager/include/exploration_manager/exploration_fsm_traj.h
++++ b/exploration_manager/include/exploration_manager/exploration_fsm_traj.h
+@@ -9,6 +9,8 @@
+ #include <string>
+ #include <vector>
+ #include <chrono>
++#include <deque>
++#include <mutex>
+ 
+ // ROS2 core
+ #include <rclcpp/rclcpp.hpp>
+@@ -56,6 +58,8 @@ constexpr double MIN_SAFE_DISTANCE = 0.15;
+ constexpr int MAX_STUCKING_COUNT = 25;
+ constexpr int MAX_STUCKING_NEXT_POS_COUNT = 14;
+ constexpr int MAX_REPLAN_FAILURES = 200;  // Max consecutive replan failures (~2s at 10ms interval)
++constexpr int REPLAN_TIME_SAMPLES = 5;    // Recent plans that set the adaptive replan horizon
++constexpr int MAX_REPLAN_OVERRUNS = 2;    // Late moving plans in a row before planning from rest
+ 
+ // Cost weights
+ constexpr double TARGET_WEIGHT = 150.0;
+@@ -101,7 +105,8 @@ namespace RealFSM {
+ enum class TrajPlannerResult {
+   FAILED = 0,        // Trajectory planning failed
+   SUCCESS = 1,       // Trajectory planned successfully
+-  MISSION_COMPLETE = 2  // Mission completed (no frontier or reached object)
++  MISSION_COMPLETE = 2,  // Mission completed (no frontier or reached object)
++  RETRY = 3              // Plan discarded because it would start behind the robot
+ };
+ 
+ // Real-world exploration FSM for continuous trajectory execution
+@@ -125,6 +130,11 @@ private:
+   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr confidence_threshold_sub_;
+   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr traj_finish_sub_;
+   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr habitat_state_sub_;
++  // Odometry arrives on its own callback group, so it is still received while a plan is computed,
++  // and is copied into fd_ at the start of each callback that reads it.
++  rclcpp::CallbackGroup::SharedPtr odom_callback_group_;
++  std::mutex odom_mutex_;
++  nav_msgs::msg::Odometry::SharedPtr latest_odom_;
+ 
+   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr ros_state_pub_;
+   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr expl_state_pub_;
+@@ -139,9 +149,14 @@ private:
+   /* Trajectory execution status */
+   // Trajectory state is tracked in fd_->static_state_
+   int replan_fail_count_ = 0;
++  std::deque<double> recent_plan_times_;  // Wall time of recent trajectory plans (s)
++  double plan_horizon_ = 0.0;              // How far ahead the current plan predicts its start (s)
++  int replan_overrun_count_ = 0;
+ 
+   /* Exploration Planner */
+   TrajPlannerResult callTrajectoryPlanner();
++  void recordPlanTime(double seconds);
++  double replanHorizon() const;
+   void polyTraj2ROSMsg(const LocalTrajectory& local_traj, trajectory_manager::msg::PolyTraj& poly_msg);
+   void selectLocalTarget(const Eigen::Vector2d& current_pos, const std::vector<Eigen::Vector2d>& path,
+       const double& local_distance, Eigen::Vector2d& target_pos, double& target_yaw);
+@@ -167,6 +182,7 @@ private:
+   void triggerCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
+   void goalCallback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg);
+   void odometryCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
++  void refreshOdometry();
+   void confidenceThresholdCallback(const std_msgs::msg::Float64::SharedPtr msg);
+   void trajectoryFinishCallback(const std_msgs::msg::Empty::SharedPtr msg);
+   void habitatStateCallback(const std_msgs::msg::Int32::SharedPtr msg);
+diff --git a/exploration_manager/src/exploration_fsm_traj.cpp b/exploration_manager/src/exploration_fsm_traj.cpp
+index 7b4f0c9..e95ddd7 100644
+--- a/exploration_manager/src/exploration_fsm_traj.cpp
++++ b/exploration_manager/src/exploration_fsm_traj.cpp
+@@ -6,6 +6,8 @@
+ #include <tf2/LinearMath/Quaternion.h>
+ #include <tf2/LinearMath/Matrix3x3.h>
+ 
++#include <algorithm>
++
+ using namespace std::chrono_literals;
+ 
+ namespace apexnav_planner {
+@@ -38,11 +40,29 @@ void ExplorationFSMReal::init(rclcpp::Node::SharedPtr node)
+   if (!node_->has_parameter("fsm/replan_timeout")) {
+     node_->declare_parameter("fsm/replan_timeout", 2.0);
+   }
++  if (!node_->has_parameter("fsm/adaptive_replan_time")) {
++    node_->declare_parameter("fsm/adaptive_replan_time", false);
++  }
++  if (!node_->has_parameter("fsm/replan_time_margin")) {
++    node_->declare_parameter("fsm/replan_time_margin", 0.5);
++  }
++  if (!node_->has_parameter("fsm/max_replan_time")) {
++    node_->declare_parameter("fsm/max_replan_time", 8.0);
++  }
++  if (!node_->has_parameter("fsm/max_replan_overrun")) {
++    node_->declare_parameter("fsm/max_replan_overrun", 0.5);
++  }
+ 
+   fp_->replan_time_ = node_->get_parameter("fsm/replan_time").as_double();
+   fp_->replan_traj_end_threshold_ = node_->get_parameter("fsm/replan_traj_end_threshold").as_double();
+   fp_->replan_frontier_change_delay_ = node_->get_parameter("fsm/replan_frontier_change_delay").as_double();
+   fp_->replan_timeout_ = node_->get_parameter("fsm/replan_timeout").as_double();
++  fp_->adaptive_replan_time_ = node_->get_parameter("fsm/adaptive_replan_time").as_bool();
++  fp_->replan_time_margin_ = node_->get_parameter("fsm/replan_time_margin").as_double();
++  fp_->max_replan_time_ = node_->get_parameter("fsm/max_replan_time").as_double();
++  fp_->max_replan_overrun_ = node_->get_parameter("fsm/max_replan_overrun").as_double();
++  recent_plan_times_.clear();
++  replan_overrun_count_ = 0;
+ 
+   if (!first_init) return;  // Skip timer/sub/pub creation on re-init (episode reset)
+ 
+@@ -63,9 +83,12 @@ void ExplorationFSMReal::init(rclcpp::Node::SharedPtr node)
+   goal_sub_ = node_->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+       "/initialpose", 10,
+       std::bind(&ExplorationFSMReal::goalCallback, this, std::placeholders::_1));
++  odom_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
++  rclcpp::SubscriptionOptions odom_options;
++  odom_options.callback_group = odom_callback_group_;
+   odom_sub_ = node_->create_subscription<nav_msgs::msg::Odometry>(
+       "/odom_world", 10,
+-      std::bind(&ExplorationFSMReal::odometryCallback, this, std::placeholders::_1));
++      std::bind(&ExplorationFSMReal::odometryCallback, this, std::placeholders::_1), odom_options);
+   confidence_threshold_sub_ = node_->create_subscription<std_msgs::msg::Float64>(
+       "/detector/confidence_threshold", 10,
+       std::bind(&ExplorationFSMReal::confidenceThresholdCallback, this, std::placeholders::_1));
+@@ -90,6 +113,7 @@ void ExplorationFSMReal::init(rclcpp::Node::SharedPtr node)
+ // Main FSM callback for real-world exploration
+ void ExplorationFSMReal::FSMCallback()
+ {
++  refreshOdometry();
+   exec_timer_->cancel();
+ 
+   // Publish current state
+@@ -136,6 +160,7 @@ void ExplorationFSMReal::FSMCallback()
+ 
+     case RealFSM::State::PLAN_TRAJ: {
+       // Plan trajectory based on current state
++      plan_horizon_ = fp_->replan_time_;
+       if (fd_->static_state_) {
+         // Robot is static, use current odometry
+         fd_->start_pt_ = fd_->odom_pos_;
+@@ -145,8 +170,12 @@ void ExplorationFSMReal::FSMCallback()
+       }
+       else {
+         // Robot is moving, predict future state for smooth replanning
+-        LocalTrajectory* info = &expl_manager_->gcopter_->local_trajectory_;
+-        double t_plan = (node_->get_clock()->now() - info->start_time).seconds() + fp_->replan_time_;
++        // The trajectory server follows the last published trajectory until the new one starts,
++        // so with adaptive replanning predict along that one, as far ahead as planning takes.
++        LocalTrajectory* info = fp_->adaptive_replan_time_ ?
++            &fd_->executing_traj_ : &expl_manager_->gcopter_->local_trajectory_;
++        plan_horizon_ = replanHorizon();
++        double t_plan = (node_->get_clock()->now() - info->start_time).seconds() + plan_horizon_;
+         t_plan = std::min(t_plan, info->duration);
+ 
+         Eigen::Vector3d cur_pos = info->traj.getPos(t_plan);
+@@ -191,6 +220,9 @@ void ExplorationFSMReal::FSMCallback()
+         replan_fail_count_ = 0;
+         transitState(RealFSM::State::EXEC_TRAJ, "FSM");
+       }
++      else if (res == TrajPlannerResult::RETRY) {
++        // The plan would start behind the robot; stay in PLAN_TRAJ and plan again.
++      }
+       else {  // TrajPlannerResult::MISSION_COMPLETE
+         // If planning from predicted trajectory endpoint failed,
+         // retry from actual odom position before giving up
+@@ -216,6 +248,7 @@ void ExplorationFSMReal::FSMCallback()
+         trajectory_manager::msg::PolyTraj poly_msg;
+         polyTraj2ROSMsg(fd_->newest_traj_, poly_msg);
+         poly_traj_pub_->publish(poly_msg);
++        fd_->executing_traj_ = fd_->newest_traj_;
+         fd_->static_state_ = false;
+         transitState(RealFSM::State::REPLAN, "FSM");
+       }
+@@ -262,7 +295,8 @@ void ExplorationFSMReal::FSMCallback()
+ 
+ TrajPlannerResult ExplorationFSMReal::callTrajectoryPlanner()
+ {
+-  rclcpp::Time time_r = node_->get_clock()->now() + rclcpp::Duration::from_seconds(fp_->replan_time_);
++  const rclcpp::Time plan_started = node_->get_clock()->now();
++  rclcpp::Time time_r = plan_started + rclcpp::Duration::from_seconds(plan_horizon_);
+   updateFrontierAndObject();
+ 
+   // Call exploration manager to find next best point
+@@ -309,10 +343,38 @@ TrajPlannerResult ExplorationFSMReal::callTrajectoryPlanner()
+ 
+   // Plan trajectory using GCopter
+   bool traj_res = expl_manager_->planTrajectory(current_state, goal_state, current_control);
++  const rclcpp::Time plan_finished = node_->get_clock()->now();
++  recordPlanTime((plan_finished - plan_started).seconds());
+   if (traj_res) {
+     auto info = &expl_manager_->gcopter_->local_trajectory_;
+-    info->start_time = (node_->get_clock()->now() - time_r).seconds() > 0 ?
+-        node_->get_clock()->now() : time_r;
++    const double overrun = (plan_finished - time_r).seconds();
++    const bool following_published = fp_->adaptive_replan_time_ && !fd_->static_state_;
++    if (overrun <= 0.0) {
++      info->start_time = time_r;
++    }
++    else if (!following_published ||
++             (time_r - fd_->executing_traj_.start_time).seconds() >= fd_->executing_traj_.duration) {
++      // The robot is at rest at the start state, so the late plan starts now.
++      info->start_time = plan_finished;
++    }
++    else if (overrun <= fp_->max_replan_overrun_) {
++      // The robot kept following the published trajectory past the predicted start state, which
++      // both trajectories share, so enter the new one as far in as the robot has moved.
++      info->start_time = time_r;
++    }
++    else {
++      ++replan_overrun_count_;
++      RCLCPP_WARN(node_->get_logger(),
++          "[Real] Plan finished %.2f s after its predicted start (horizon %.2f s), replanning (%d/%d)",
++          overrun, plan_horizon_, replan_overrun_count_, FSMConstantsReal::MAX_REPLAN_OVERRUNS);
++      if (replan_overrun_count_ >= FSMConstantsReal::MAX_REPLAN_OVERRUNS) {
++        // Planning keeps outrunning the prediction: stop and plan from the robot's actual state.
++        replan_overrun_count_ = 0;
++        emergencyStop();
++      }
++      return TrajPlannerResult::RETRY;
++    }
++    replan_overrun_count_ = 0;
+     fd_->newest_traj_ = expl_manager_->gcopter_->local_trajectory_;
+     return TrajPlannerResult::SUCCESS;
+   }
+@@ -320,6 +382,24 @@ TrajPlannerResult ExplorationFSMReal::callTrajectoryPlanner()
+   return TrajPlannerResult::FAILED;
+ }
+ 
++void ExplorationFSMReal::recordPlanTime(double seconds)
++{
++  recent_plan_times_.push_back(seconds);
++  while ((int)recent_plan_times_.size() > FSMConstantsReal::REPLAN_TIME_SAMPLES)
++    recent_plan_times_.pop_front();
++}
++
++double ExplorationFSMReal::replanHorizon() const
++{
++  // A moving replan that takes longer than its prediction horizon starts behind the robot, so
++  // predict as far ahead as the slowest recent plan took, plus a margin.
++  if (!fp_->adaptive_replan_time_ || recent_plan_times_.empty())
++    return fp_->replan_time_;
++  const double slowest = *std::max_element(recent_plan_times_.begin(), recent_plan_times_.end());
++  const double longest = std::max(fp_->replan_time_, fp_->max_replan_time_);
++  return std::min(std::max(slowest + fp_->replan_time_margin_, fp_->replan_time_), longest);
++}
++
+ void ExplorationFSMReal::polyTraj2ROSMsg(
+     const LocalTrajectory& local_traj, trajectory_manager::msg::PolyTraj& poly_msg)
+ {
+@@ -504,6 +584,7 @@ bool ExplorationFSMReal::updateFrontierAndObject()
+ 
+ void ExplorationFSMReal::frontierCallback()
+ {
++  refreshOdometry();
+   // Update frontiers and visualize in idle states
+   if (state_ != RealFSM::State::WAIT_TRIGGER && state_ != RealFSM::State::FINISH)
+     return;
+@@ -525,6 +606,21 @@ void ExplorationFSMReal::triggerCallback(const geometry_msgs::msg::PoseStamped::
+ 
+ void ExplorationFSMReal::odometryCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
+ {
++  std::lock_guard<std::mutex> lock(odom_mutex_);
++  latest_odom_ = msg;
++}
++
++void ExplorationFSMReal::refreshOdometry()
++{
++  // Timers share the default callback group with planning, so a subscription there can wait for
++  // several plans in a row. Take the newest odometry received on its own group instead.
++  nav_msgs::msg::Odometry::SharedPtr msg;
++  {
++    std::lock_guard<std::mutex> lock(odom_mutex_);
++    msg.swap(latest_odom_);
++  }
++  if (!msg) return;
++
+   fd_->odom_pos_(0) = msg->pose.pose.position.x;
+   fd_->odom_pos_(1) = msg->pose.pose.position.y;
+   fd_->odom_pos_(2) = msg->pose.pose.position.z;
+@@ -564,6 +660,7 @@ void ExplorationFSMReal::confidenceThresholdCallback(const std_msgs::msg::Float6
+ 
+ void ExplorationFSMReal::goalCallback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
+ {
++  refreshOdometry();
+   double x = msg->pose.pose.position.x;
+   double y = msg->pose.pose.position.y;
+ 
+@@ -583,6 +680,7 @@ void ExplorationFSMReal::goalCallback(const geometry_msgs::msg::PoseWithCovarian
+     trajectory_manager::msg::PolyTraj poly_msg;
+     polyTraj2ROSMsg(expl_manager_->gcopter_->local_trajectory_, poly_msg);
+     poly_traj_pub_->publish(poly_msg);
++    fd_->executing_traj_ = expl_manager_->gcopter_->local_trajectory_;
+   }
+   RCLCPP_INFO(node_->get_logger(), "[Real] Received goal pose: x=%.2f, y=%.2f, yaw=%.2f", x, y, yaw);
+ }
+@@ -601,13 +699,20 @@ void ExplorationFSMReal::emergencyStop()
+ 
+ void ExplorationFSMReal::safetyCallback()
+ {
+-  if (state_ != RealFSM::State::REPLAN)
++  refreshOdometry();
++  // With adaptive replanning the robot keeps following the published trajectory between planning
++  // attempts and until the new one starts, so that trajectory is watched in those states too.
++  const bool following_published = fp_->adaptive_replan_time_ && !fd_->static_state_ &&
++      (state_ == RealFSM::State::PLAN_TRAJ || state_ == RealFSM::State::EXEC_TRAJ);
++  if (state_ != RealFSM::State::REPLAN && !following_published)
+     return;
++  const LocalTrajectory& executing = fp_->adaptive_replan_time_ ?
++      fd_->executing_traj_ : expl_manager_->gcopter_->local_trajectory_;
+ 
+   // Check if robot deviates from planned trajectory
+-  double t_cur = (node_->get_clock()->now() - expl_manager_->gcopter_->local_trajectory_.start_time).seconds();
+-  t_cur = std::min(t_cur, expl_manager_->gcopter_->local_trajectory_.duration);
+-  Eigen::Vector3d cur_pos = expl_manager_->gcopter_->local_trajectory_.traj.getPos(t_cur);
++  double t_cur = (node_->get_clock()->now() - executing.start_time).seconds();
++  t_cur = std::min(t_cur, executing.duration);
++  Eigen::Vector3d cur_pos = executing.traj.getPos(t_cur);
+ 
+   if ((cur_pos.head(2) - fd_->odom_pos_.head(2)).norm() > 0.3) {
+     RCLCPP_ERROR(node_->get_logger(), "[Real] Odom far from traj (%.2f, %.2f), Stop!!!",
+@@ -622,9 +727,9 @@ void ExplorationFSMReal::safetyCallback()
+   double sample_dt = 0.1;     // Sample every 0.1 seconds
+ 
+   for (double t_check = t_cur;
+-      t_check <= std::min(t_cur + time_horizon, expl_manager_->gcopter_->local_trajectory_.duration);
++      t_check <= std::min(t_cur + time_horizon, executing.duration);
+       t_check += sample_dt) {
+-    Eigen::Vector3d check_pos = expl_manager_->gcopter_->local_trajectory_.traj.getPos(t_check);
++    Eigen::Vector3d check_pos = executing.traj.getPos(t_check);
+     Eigen::Vector2d check_pos_2d = check_pos.head(2);
+ 
+     // Skip positions too close to origin

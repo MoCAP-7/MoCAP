@@ -1,0 +1,99 @@
+camera:
+  calibration_resolution: [672, 376]
+  intrinsics:
+    - [267.214, 0.0, 337.181]
+    - [0.0, 267.150, 182.288]
+    - [0.0, 0.0, 1.0]
+  minimum_depth_m: 0.10
+  maximum_depth_m: 5.0
+  fallback_camera_height_m: 1.122339129447937
+  fallback_ground_down_xyz: [0.013630234132681617, 0.9477663115351749, 0.31867418382495005]
+  require_dynamic_ground_plane: true
+  ground_plane_max_age_s: 2.0
+  odometry_hz: 30.0
+  mapping_hz: 8.0
+  perception_hz: 1.0
+  object_cloud_stride: 2
+  maximum_object_points: 12000
+
+robot:
+  zed_host: 127.0.0.1
+  zed_port: 6000
+  base_rpc_host: 192.168.1.10
+  base_rpc_port: 5557
+  base_rpc_timeout_s: 2.0
+  base_to_camera_forward_m: 0.2143
+  base_to_camera_left_m: 0.0603
+  command_timeout_s: 0.15
+  sensor_timeout_s: 0.50
+  control_hz: 20.0
+  maximum_linear_mps: 0.18
+  maximum_yaw_rad_s: 0.35
+  minimum_linear_mps: 0.05
+  minimum_yaw_rad_s: 0.16
+
+vlm:
+  grounding_dino_url: http://127.0.0.1:12181/gdino
+  blip2_itm_url: http://127.0.0.1:12182/blip2itm
+  mobile_sam_url: http://127.0.0.1:12183/mobile_sam
+  yolov7_url: http://127.0.0.1:12184/yolov7
+  request_timeout_s: 45.0
+  jpeg_quality: 90
+  yolo_confidence_threshold: 0.30
+  yolo_iou_threshold: 0.50
+  grounding_dino_box_threshold: 0.40
+  grounding_dino_text_threshold: 0.25
+  mask_erosion_pixels: 1
+  maximum_consecutive_errors: 3
+
+planner:
+  ros_domain_id: 47
+  map_size_m: 80.0
+  map_resolution_m: 0.05
+  # ApexNav checks only the base center against obstacles inflated by this
+  # radius, so it is the robot's largest reach from that center, arms in the
+  # travel pose included, plus a margin. The footprint below stays upstream's:
+  # a footprint as large as the robot would reach cells beside it that the
+  # forward-facing camera has not seen, and unknown cells count as obstacles.
+  obstacle_inflation_m: 0.50
+  optimizer_safe_distance_m: 0.20
+  footprint_length_m: 0.16
+  footprint_width_m: 0.16
+  wheel_base_m: 0.50
+  # Each optimized trajectory is retimed along its own path to these reference
+  # limits, reaching them as soon as the acceleration limits allow. They stay
+  # below robot.maximum_* so the tracker can close the lag of a base that
+  # delivers less than it is commanded.
+  time_scale_to_limits: true
+  reference_max_linear_mps: 0.12
+  reference_max_yaw_rad_s: 0.24
+  # Predict a replan made while moving as far ahead as recent plans took,
+  # instead of upstream's fixed replan time, so the new trajectory does not
+  # start behind the robot when planning is slow.
+  adaptive_replan_time: true
+  minimum_obstacle_height_m: 0.08
+  maximum_obstacle_height_m: 1.60
+  virtual_ground_height_m: -0.34
+  maximum_episode_s: 900.0
+  trigger_delay_s: 3.0
+  trigger_retry_s: 1.0
+  initial_scan_timeout_s: 50.0
+  minimum_map_free_cells: 500
+
+experiment:
+  output_dir: ./outputs/apexnav
+  priors_path: baselines/nav/apexnav/target_priors.yaml
+  save_detection_images: true
+  record_debug: true
+
+viewer:
+  # Live map viewer (foxglove_bridge). An empty address binds this host's
+  # Tailscale IPv4, or 127.0.0.1 without Tailscale.
+  enabled: true
+  address: ""
+  port: 8765
+  # Publish world to base_footprint on /tf while a viewer subscribes.
+  publish_tf: true
+  message_backlog_size: 128
+  max_qos_depth: 100
+  num_threads: 2

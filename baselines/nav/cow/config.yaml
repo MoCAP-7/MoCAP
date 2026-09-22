@@ -1,0 +1,57 @@
+# CoW (CLIP on Wheels, CVPR 2023) as an independent real-robot ObjectNav baseline.
+# Values under agent are CoW's own constants unless a comment says otherwise.
+
+upstream:
+  # Unmodified checkout at the commit in upstream.lock (never copied into YOR).
+  repository_path: /home/yor/codefield/cow
+  verify_commit: true
+
+agent:
+  # CLIP-Grad ViT-B/32 with CoW's --center post-processing.
+  localizer: clip_grad
+  clip_checkpoint: /home/yor/models/yoloe/clip/ViT-B-32.pt
+  # Relative to the CoW checkout; the default of CoW's evaluation runners.
+  prompt_templates: prompt_templates/imagenet_template.json
+  # null uses CoW's hparams/robo.json value (the RoboTHOR/PASTURE setting).
+  threshold: null
+  center_only: true
+  device: cuda
+  # CoW's RoboTHOR camera model; ZED frames are re-rendered into it.
+  image_size: 672
+  fov_deg: 90.0
+  voxel_size_m: 0.125
+  rotation_deg: 30.0
+  forward_m: 0.25
+  max_ceiling_height_m: 1.9
+  # CoW's floor band for its benchmark with sensor depth noise (Habitat).
+  floor_tolerance_m: 0.15
+  in_cspace: true
+  fail_stop: true
+  # CoW stops 1.0 m from the target; the comparison uses YOR's docking distance.
+  stop_radius_m: 0.65
+  max_steps: 250
+
+camera:
+  source_resolution: [672, 376]
+  intrinsics:
+    - [267.214, 0.0, 337.181]
+    - [0.0, 267.150, 182.288]
+    - [0.0, 0.0, 1.0]
+  # null reads the calibrated camera height and gravity direction from the
+  # YOR task configuration (dock_to_visible_object settings).
+  camera_height_m: null
+  down_camera_xyz: null
+
+robot:
+  # zed: the ZED tracking pose of the camera. dead_reckoning: CoW's own
+  # integration of nominal action deltas.
+  pose_source: zed
+
+experiment:
+  output_root: outputs/cow
+  maximum_duration_s: 900.0
+  save_images: true
+  map_image_every_steps: 10
+  # CoW has no collision handling of its own. When YOR's clearance check
+  # refuses or cuts short a forward step, the episode ends as safety_stop.
+  end_on_safety_stop: true

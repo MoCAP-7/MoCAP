@@ -1,0 +1,67 @@
+# Cap-X + navigation-memory baseline for the physical YOR robot.
+# This file references production YOR configuration but never overwrites it.
+condition: capx_plus_nav
+navigation: yor
+yor_agent_config: ../../../yor_agent/configs/passive_video_tasks.yaml
+
+allowed_tasks:
+  - find_blue_trash_bin
+  - find_printing_machine
+  - find_cardbox_on_storage_cabinet
+  - find_can_on_table
+  - find_marker_on_table
+  - grasp_cardboard_box
+  - grasp_can
+  - find_can_and_give_back
+  - throw_box_to_trash_bin
+
+navigation_planner:
+  enabled: true
+  model: gpt-5.6-sol
+  reasoning_effort: high
+  timeout_s: 300.0
+  max_memory_frames: 32
+  image_detail: high
+  image_max_width: 1024
+
+capx_manipulation:
+  # Cap-X open_gripper/close_gripper use the real guarded Nero RPC by default.
+  # Set true only for an explicitly labeled dry pipeline trial.
+  simulate_gripper: false
+
+# Defaults match the supervised yor_agent GPT-5.6 Sol condition.
+policy:
+  provider: openai
+  model: gpt-5.6-sol
+  server_url: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+  temperature: 1.0
+  max_tokens: 20480
+  reasoning_effort: high
+  use_visual_feedback: true
+  use_img_differencing: false
+  use_video_differencing: false
+  visual_differencing_model: gpt-5.6-sol
+  visual_differencing_model_server_url: https://api.openai.com/v1
+  visual_differencing_api_key_env: OPENAI_API_KEY
+  record_video: false
+  save_multiturn_prompts: true
+  debug: false
+
+output_root: ../../../outputs/capx_plus_nav
+
+multi_turn_prompt: |
+  The following code was just executed:
+  ```python
+  {executed_code}
+  ```
+  Current console stdout:
+  ```
+  {console_stdout}
+  ```
+  Current console stderr:
+  ```
+  {console_stderr}
+  ```
+  Inspect the new visual observation and primitive feedback. If the task is not
+  visibly complete, regenerate only the next useful, conservative code block.

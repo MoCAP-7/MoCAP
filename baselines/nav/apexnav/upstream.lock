@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/Robotics-STAR-Lab/ApexNav.git",
+  "official_main_commit": "049971b613fcd2554b034bd4a853d79cc1e61613",
+  "ros2_port_ref": "origin/ros2-jazzy",
+  "ros2_port_commit": "1ec9d155fc972fb8a139bd57f43b65247237601e",
+  "osqp_commit": "0dd00a578cf1c2691c5c379965d504c75bf6cfad",
+  "osqp_eigen_commit": "85c37623774c682db396505f0d4ea677040c2557",
+  "qdldl_commit": "7d16b70a10a152682204d745d814b6eb63dc5cd2",
+  "yolov7_commit": "a207844b1ce82d204ab36d87d496728d3d2348e7",
+  "yolov7_e6e_sha256": "b370120a414bf32b5d65fc808e5a32c8d9b3c63902d1bc41894fc9d86eccf9cb",
+  "foxglove_bridge_version": "3.4.3-2jammy.20260725.213251",
+  "foxglove_bridge_deb_url": "http://snapshots.ros.org/humble/2026-08-07/ubuntu/pool/main/r/ros-humble-foxglove-bridge/ros-humble-foxglove-bridge_3.4.3-2jammy.20260725.213251_arm64.deb",
+  "foxglove_bridge_deb_size": 11611234,
+  "foxglove_bridge_deb_sha256": "dc70642916382bc9d12065ad04373938c69800490ceecbaed068dfa81e5d708b",
+  "lichtblick_release": "v1.29.1",
+  "policy": "Official main defines baseline behavior; the community ROS2 port supplies the ROS2 API scaffold. yor_humble.patch changes only Humble compatibility and YOR embodiment/safety; pcl_conversions_components.patch applies only inside the private dependency sysroot."
+}

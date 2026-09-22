@@ -1,0 +1,337 @@
+{
+  "configById": {
+    "3D!apexnavmap": {
+      "cameraState": {
+        "perspective": false,
+        "distance": 20,
+        "phi": 0.1,
+        "thetaOffset": 90,
+        "targetOffset": [
+          0,
+          0,
+          0
+        ],
+        "target": [
+          0,
+          0,
+          0
+        ],
+        "targetOrientation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "fovy": 45,
+        "near": 0.1,
+        "far": 200
+      },
+      "followTf": "world",
+      "followMode": "follow-none",
+      "scene": {
+        "backgroundColor": "#ffffff",
+        "transforms": {
+          "showLabel": false,
+          "axisScale": 0.3
+        }
+      },
+      "transforms": {},
+      "topics": {
+        "/grid_map/free": {
+          "visible": true,
+          "colorMode": "flat",
+          "flatColor": "rgba(176, 220, 245, 1)",
+          "pointShape": "square",
+          "pointSize": 4,
+          "decayTime": 0
+        },
+        "/grid_map/occupied_inflate": {
+          "visible": true,
+          "colorMode": "flat",
+          "flatColor": "rgba(136, 138, 133, 1)",
+          "pointShape": "square",
+          "pointSize": 4,
+          "decayTime": 0
+        },
+        "/grid_map/occupied": {
+          "visible": true,
+          "colorMode": "flat",
+          "flatColor": "rgba(85, 87, 83, 1)",
+          "pointShape": "square",
+          "pointSize": 4,
+          "decayTime": 0
+        },
+        "/grid_map/value_map": {
+          "visible": true,
+          "colorMode": "gradient",
+          "colorField": "intensity",
+          "gradient": [
+            "rgba(250, 255, 203, 1)",
+            "rgba(204, 0, 0, 1)"
+          ],
+          "minValue": 0.1,
+          "maxValue": 0.35,
+          "pointShape": "square",
+          "pointSize": 4,
+          "decayTime": 0
+        },
+        "/grid_map/occupancy_object": {
+          "visible": false,
+          "colorMode": "flat",
+          "flatColor": "rgba(245, 121, 0, 1)",
+          "pointShape": "square",
+          "pointSize": 6,
+          "decayTime": 0
+        },
+        "/grid_map/filtered_object_cloud": {
+          "visible": true,
+          "colorMode": "flat",
+          "flatColor": "rgba(92, 53, 102, 1)",
+          "pointShape": "circle",
+          "pointSize": 3,
+          "decayTime": 0
+        },
+        "/grid_map/over_depth_object_cloud": {
+          "visible": true,
+          "colorMode": "flat",
+          "flatColor": "rgba(206, 92, 0, 1)",
+          "pointShape": "circle",
+          "pointSize": 3,
+          "decayTime": 0
+        },
+        "/grid_map/all_object_cloud": {
+          "visible": false,
+          "colorMode": "flat",
+          "flatColor": "rgba(164, 0, 0, 1)",
+          "pointShape": "circle",
+          "pointSize": 2,
+          "decayTime": 0
+        },
+        "/object/clouds": {
+          "visible": false,
+          "colorMode": "rgb",
+          "colorField": "rgb",
+          "pointShape": "circle",
+          "pointSize": 6,
+          "decayTime": 0
+        },
+        "/planning_vis/frontier": {
+          "visible": true,
+          "showOutlines": false,
+          "namespaces": {
+            "frontier": {
+              "visible": true
+            },
+            "dormant_frontier": {
+              "visible": true
+            },
+            "object": {
+              "visible": true
+            }
+          }
+        },
+        "/planning_vis/viewpoints": {
+          "visible": true,
+          "showOutlines": false,
+          "namespaces": {
+            "local_point": {
+              "visible": true
+            },
+            "next_path": {
+              "visible": true
+            },
+            "tsp_tour": {
+              "visible": true
+            }
+          }
+        },
+        "/apexnav/visualization/robot": {
+          "visible": true,
+          "showOutlines": false,
+          "namespaces": {
+            "robot_position": {
+              "visible": true
+            },
+            "robot_direction": {
+              "visible": true
+            }
+          }
+        },
+        "/travel_traj": {
+          "visible": false,
+          "showOutlines": false
+        },
+        "/trajectory/mincoPath": {
+          "visible": true,
+          "type": "line",
+          "lineWidth": 0.06,
+          "gradient": [
+            "rgba(204, 0, 0, 1)",
+            "rgba(204, 0, 0, 1)"
+          ]
+        },
+        "/kinoastar/FlatTraj": {
+          "visible": false,
+          "type": "line",
+          "lineWidth": 0.04,
+          "gradient": [
+            "rgba(52, 101, 164, 1)",
+            "rgba(52, 101, 164, 1)"
+          ]
+        },
+        "/mpc_car/reference_path": {
+          "visible": true,
+          "showOutlines": false
+        },
+        "/mpc_car/predict_path": {
+          "visible": true,
+          "showOutlines": false
+        }
+      },
+      "layers": {
+        "apexnav-grid-1m": {
+          "visible": true,
+          "frameLocked": true,
+          "label": "Grid 1 m",
+          "instanceId": "apexnav-grid-1m",
+          "layerId": "foxglove.Grid",
+          "frameId": "world",
+          "size": 40,
+          "divisions": 40,
+          "lineWidth": 0.5,
+          "color": "rgba(128, 128, 128, 0.3)",
+          "position": [
+            0,
+            0,
+            -0.02
+          ],
+          "rotation": [
+            0,
+            0,
+            0
+          ],
+          "order": 1
+        }
+      },
+      "publish": {
+        "type": "point",
+        "poseTopic": "/apexnav/viewer/unused_pose",
+        "pointTopic": "/apexnav/viewer/unused_point",
+        "poseEstimateTopic": "/apexnav/viewer/unused_pose_estimate",
+        "poseEstimateXDeviation": 0.5,
+        "poseEstimateYDeviation": 0.5,
+        "poseEstimateThetaDeviation": 0.26179939
+      },
+      "imageMode": {}
+    },
+    "Image!apexnavdetect": {
+      "cameraState": {
+        "distance": 20,
+        "perspective": true,
+        "phi": 60,
+        "target": [
+          0,
+          0,
+          0
+        ],
+        "targetOffset": [
+          0,
+          0,
+          0
+        ],
+        "targetOrientation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "thetaOffset": 45,
+        "fovy": 45,
+        "near": 0.5,
+        "far": 5000
+      },
+      "followMode": "follow-pose",
+      "scene": {},
+      "transforms": {},
+      "topics": {},
+      "layers": {},
+      "publish": {
+        "type": "point",
+        "poseTopic": "/apexnav/viewer/unused_pose",
+        "pointTopic": "/apexnav/viewer/unused_point",
+        "poseEstimateTopic": "/apexnav/viewer/unused_pose_estimate",
+        "poseEstimateXDeviation": 0.5,
+        "poseEstimateYDeviation": 0.5,
+        "poseEstimateThetaDeviation": 0.26179939
+      },
+      "imageMode": {
+        "imageTopic": "/apexnav/detector/detect_img/compressed",
+        "synchronize": false
+      }
+    },
+    "StateTransitions!apexnavfsm": {
+      "isSynced": false,
+      "showPoints": true,
+      "xAxisRange": 120,
+      "paths": [
+        {
+          "value": "/apexnav/ros/state.data",
+          "label": "FSM (1 WAIT_TRIGGER, 2 PLAN_TRAJ, 3 EXEC_TRAJ, 4 REPLAN, 5 FINISH)",
+          "enabled": true,
+          "timestampMethod": "receiveTime"
+        }
+      ]
+    },
+    "Plot!apexnavspeed": {
+      "paths": [
+        {
+          "value": "/apexnav/cmd_vel_raw.linear.x",
+          "label": "traj_server cmd v (m/s)",
+          "enabled": true,
+          "timestampMethod": "receiveTime"
+        },
+        {
+          "value": "/apexnav/odom.twist.twist.linear.x",
+          "label": "odom v, filtered and clipped (m/s)",
+          "enabled": true,
+          "timestampMethod": "receiveTime"
+        },
+        {
+          "value": "/mpc_car/track_err.data",
+          "label": "MPC tracking error",
+          "enabled": true,
+          "timestampMethod": "receiveTime"
+        }
+      ],
+      "showXAxisLabels": true,
+      "showYAxisLabels": true,
+      "showLegend": true,
+      "legendDisplay": "floating",
+      "showPlotValuesInLegend": true,
+      "isSynced": false,
+      "xAxisVal": "timestamp",
+      "sidebarDimension": 240
+    }
+  },
+  "globalVariables": {},
+  "userNodes": {},
+  "playbackConfig": {
+    "speed": 1
+  },
+  "layout": {
+    "first": "3D!apexnavmap",
+    "second": {
+      "first": "Image!apexnavdetect",
+      "second": {
+        "first": "StateTransitions!apexnavfsm",
+        "second": "Plot!apexnavspeed",
+        "direction": "column",
+        "splitPercentage": 30
+      },
+      "direction": "column",
+      "splitPercentage": 45
+    },
+    "direction": "row",
+    "splitPercentage": 64
+  }
+}

@@ -1,0 +1,17 @@
+# Real-robot navigation comparison on the passive-video tasks: YOR ("ours")
+# and its ablations next to the CoW and ApexNav baselines. Every YOR condition
+# loads this file so the startup planner and the policy use the same model and
+# every run has the baselines' wall-clock limit. Name the episodes with
+# --experiment and --start-label; baselines/nav/experiment/README.md lists the
+# commands for every method.
+extends: passive_video_tasks.yaml
+
+model:
+  provider: openai
+  name: gpt-5.6-sol
+
+agent:
+  time_limit_s: 900
+
+navigation_planner:
+  model: gpt-5.6-sol

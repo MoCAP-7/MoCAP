@@ -1,0 +1,48 @@
+# CaP-X-style coarse navigation baseline for the passive-video mobile
+# manipulation tasks. The policy moves the base only with CaP-X's navigation
+# vocabulary: go_forward (1 m), turn_left_45_degrees, turn_right_45_degrees and
+# goto_planar_position (a relative planar position, heading kept), plus
+# say_something. YOR's docking, manipulation readiness and fine motion
+# primitives are hidden and the startup navigation planner is off; the
+# manipulation and perception primitives, the model and the wall-clock limit
+# are those of nav_comparison.yaml. Run it like any Web UI condition:
+#
+#   python -m yor_agent.launch --config yor_agent/configs/capx_coarse_navigation.yaml \
+#     --task-id find_can_and_give_back --experiment <name> --start-label kitchen --web-ui
+extends: nav_comparison.yaml
+
+task_suite:
+  output_root: ../outputs/capx_coarse_navigation
+
+# Comparison episodes of this baseline go to outputs/yor/capx_coarse_navigation.
+comparison_condition: capx_coarse_navigation
+
+model:
+  # The system prompt describes the coarse vocabulary instead of docking,
+  # manipulation readiness and the fine motion primitives.
+  system_prompt: capx_coarse_navigation
+
+navigation_planner:
+  enabled: false
+
+primitive_overrides:
+  turn_relative:
+    exposed: false
+  drive_straight:
+    exposed: false
+  drive_lateral:
+    exposed: false
+  dock_to_visible_object:
+    exposed: false
+  prepare_for_manipulation:
+    exposed: false
+  go_forward:
+    exposed: true
+  turn_left_45_degrees:
+    exposed: true
+  turn_right_45_degrees:
+    exposed: true
+  goto_planar_position:
+    exposed: true
+  say_something:
+    exposed: true

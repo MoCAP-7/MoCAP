@@ -1,0 +1,394 @@
+# Defaults for every robot primitive currently exposed to generated LLM code.
+#
+# Required arguments (for example angle_deg, distance_m, object_name, and target
+# poses) deliberately have no defaults: the LLM must choose them from the task
+# and current observation. `null` delegates to the task's robot/controller
+# configuration. Restart the agent after editing this file.
+# `finish(reason=...)` is executor flow control rather than a robot primitive,
+# so it is intentionally not configured here.
+version: 1
+
+primitives:
+  observe:
+    # Signature: observe()
+    defaults: {}
+
+  stop:
+    # Signature: stop()
+    defaults: {}
+
+  turn_relative:
+    # Required: angle_deg. Positive is left/CCW; negative is right/CW.
+    defaults:
+      # null uses robot.navigation.default_yaw_rad_s for the active task.
+      max_yaw_deg_s: null
+      # null computes a duration from angle/speed, capped at 45 seconds.
+      timeout_s: null
+
+  drive_straight:
+    # Required: distance_m. Positive is forward; negative is reverse.
+    defaults:
+      # null preserves the active task's separate forward/reverse defaults.
+      # A number here becomes the default cap for both directions.
+      max_speed_mps: null
+      # null computes a duration from distance/speed, capped at 45 seconds.
+      timeout_s: null
+
+  drive_lateral:
+    # Required: distance_m. Positive is robot-left; negative is robot-right.
+    # There is no side-facing clearance sensor, so use only short supervised
+    # steps through side space that is already known to be clear.
+    defaults:
+      # null uses robot.navigation.default_linear_mps for either direction.
+      max_speed_mps: null
+      # null computes a duration from distance/speed, capped at 45 seconds.
+      timeout_s: null
+
+  get_object_pose:
+    # Required: object_name and keyword-only arm.
+    defaults:
+      return_bbox_extent: false
+      return_zed_distance: false
+    settings:
+      # One initial RGB-D frame plus two fresh stopped retries.
+      depth_retry_count: 2
+
+  sample_grasp_pose:
+    # Required: object_name and keyword-only arm="left" or arm="right".
+    defaults: {}
+    settings:
+      # One initial RGB-D frame plus two fresh stopped retries.
+      depth_retry_count: 2
+
+  goto_pose:
+    # Cartesian mode requires position and quaternion_wxyz. Passing position
+    # "home" with no quaternion uses collision-aware cuRobo joint planning.
+    # arm is required and keyword-only in every mode.
+    defaults:
+      z_approach: 0.0
+      timeout_s: 60.0
+
+  goto_grasp_pose:
+    # Required: object_name, position, quaternion_wxyz, and keyword-only
+    # arm="left" or arm="right". This reacquires a fresh target mask and never
+    # falls back to the collision-unaware goto_pose.
+    defaults:
+      approach_m: 0.10
+      timeout_s: 60.0
+
+  open_gripper:
+    # Required: keyword-only arm.
+    defaults:
+      timeout_s: 3.0
+      # null uses the Nero service's configured default force.
+      force_n: null
+    # Physical Nero gripper is connected; send commands through the arm RPC.
+    settings:
+      simulated: false
+
+  close_gripper:
+    # Required: keyword-only arm.
+    defaults:
+      timeout_s: 3.0
+      # null uses the Nero service's configured default force.
+      force_n: null
+    # Physical Nero gripper is connected; send commands through the arm RPC.
+    settings:
+      simulated: false
+
+  lift_grasped_object:
+    # Call immediately after close_gripper. The perceived target geometry is
+    # attached to the TCP collision model before planning the local-Z lift.
+    # Exposing this also enables the attached-object collision path in
+    # goto_grasp_pose, which makes goto_pose("home") refuse a closed grasp that
+    # has not been lifted. Held off until plan_attached_lift stops calling a
+    # reachable grasp pose a start-state collision; see
+    # docs/attached_lift_2026-09-07.md.
+    exposed: false
+    defaults:
+      lift_m: 0.15
+      timeout_s: 60.0
+
+  dock_to_visible_object:
+    # Required: object_name. Keep the LLM-facing API stable while Nav2 owns
+    # planning, control, obstacle avoidance, and rolling replanning.
+    defaults: {}
+    settings:
+      backend: nav2
+      # Upstream YOR calibration: the ZED left optical center is 21.43 cm
+      # forward and 6.03 cm left of the swerve rotation center. Docking distance
+      # remains measured from the camera/front plane; Nav2 receives the
+      # corresponding base-center goal internally.
+      # Success boundary, camera to target. Deliberately a little beyond the
+      # range from which an arm certifies a grasp without moving the base, so
+      # every docking hands prepare_for_manipulation a local base search to do
+      # and runs with and without the readiness prior spend their Pi IK
+      # queries on the same phase. A goal closer than this stalled Nav2 short
+      # of it beside furniture, ending the docking before its final turn.
+      # Keep it inside prepare_for_manipulation's
+      # maximum_initial_target_distance_m together with
+      # final_distance_tolerance_m, or prepare refuses the target as too far.
+      docking_distance_m: 0.65
+      # Aim slightly inside the semantic success boundary so Nav2 pose
+      # tolerance and small perception drift do not produce a false success.
+      nav2_goal_distance_m: 0.60
+      # Nav2's circular footprint, centred on the ZED (0.2143 m ahead of the
+      # swerve centre). 0.60 reached 0.81 m ahead, so beside a desk Nav2
+      # declared its safety zone occupied or stalled 4 cm short of the goal
+      # while the direct primitives could still advance (2026-09-05 20:06);
+      # 0.45 still did. 0.30 reaches 0.51 m ahead, 0.30 m to the side and
+      # only 0.09 m behind: it covers the chassis front and the arms' 0.43 m
+      # forward reach in the rest pose, but not the rear 13 cm of the chassis
+      # nor the elbows (0.54 m half width). Docking is a forward approach the
+      # direct-primitive gate also watches; a polygon footprint is the proper
+      # fix, and until then do not dock with obstacles beside or behind.
+      robot_radius_m: 0.30
+      # Preferred over the circle when present: Nav2's footprint as a convex
+      # polygon in metres from the swerve centre (+x forward, +y left). This
+      # is the travel pose's collision-sphere envelope plus 0.05 m: the arms
+      # reach 0.457 m ahead and 0.433 m to each side, and the chassis rear is
+      # 0.22 m (deployed sphere model, 2026-09-10 rest pose). The circle
+      # covered the front but left the arms' width and the chassis rear
+      # outside it. Remove
+      # this key to fall back to the circle. Re-derive when the rest pose
+      # changes: yor_agent/docs/nav2_setup.md gives the probe.
+      robot_footprint_xy:
+        - [0.51, 0.49]
+        - [-0.27, 0.49]
+        - [-0.27, -0.49]
+        - [0.51, -0.49]
+      # The outline above is the arms' envelope, and it now judges only the
+      # points the ZED bridge measured at heights where the arms actually
+      # reach forward of the outline below. Every point is judged against this
+      # one. It is the envelope above with its FRONT truncated to the body's
+      # 0.27 m (body_polygon_xy 0.22 grown by the gate's
+      # arm_footprint_structure_margin_m 0.05) and its width left untouched,
+      # so the split is a forward-only relaxation: nothing loses lateral or
+      # rear protection, and the elbows, which occupy z 0.67-0.82 sideways
+      # without reaching forward, stay covered here at full width.
+      # A flat 2-D arms envelope charged a 0.72 m desk top against grippers
+      # that pass above it, which put the docking goal 0.13 m inside the desk
+      # and stalled 12 of 22 attempts on 2026-09-07.
+      robot_structure_footprint_xy:
+        - [0.27, 0.49]
+        - [-0.27, 0.49]
+        - [-0.27, -0.49]
+        - [0.27, -0.49]
+      base_to_camera_forward_m: 0.2143
+      base_to_camera_left_m: 0.0603
+      nav2_frame_id: odom
+      nav2_action_name: navigate_to_pose
+      nav2_stop_service_name: /yor_base_bridge/stop
+      nav2_halt_service_name: /yor_base_bridge/halt
+      nav2_clear_stop_service_name: /yor_base_bridge/clear_stop
+      nav2_server_timeout_s: 10.0
+      behavior_tree: /home/yor/codefield/YOR/yor_agent/ros2_ws/src/yor_nav2_bridge/behavior_trees/navigate_no_reverse.xml
+      final_distance_tolerance_m: 0.08
+      # Emit structured action feedback without changing the primitive API.
+      progress_interval_s: 1.0
+      # Cancel one Nav2 action when its physical base pose makes no meaningful
+      # progress for this long. This spans Nav2 recovery cycles so
+      # an unreachable fine adjustment cannot consume the 300 s total timeout.
+      no_progress_timeout_s: 10.0
+      minimum_progress_translation_m: 0.03
+      minimum_progress_yaw_rad: 0.05
+      timeout_s: 300.0
+
+      # SAM3 metric projection still uses the existing calibrated VGA
+      # intrinsics and the ZED SDK floor plane.
+      target_max_depth_m: 20.0
+      target_min_depth_pixels: 20
+      # The fallback plane is also the centre of the floor-plane gate's
+      # envelope, so it is the plane the ZED SDK reports at the lift height
+      # the robot runs with (camera 1.03-1.05 m above the floor in every
+      # accepted plane of 2026-09-13/14), not an older calibration.
+      ground_camera_height_m: 1.045
+      ground_down_camera_xyz:
+        - 0.0
+        - 0.9400
+        - 0.3411
+      require_dynamic_ground_plane: true
+      ground_plane_max_age_s: 2.0
+      # With the base standing still in front of a table the SDK can report a
+      # wrong plane steadily for longer than the settle time (1.22 m for over
+      # 2 s, 2026-09-14), which a wide envelope then adopts. The lift does not
+      # move during these runs, so the envelope only has to cover the SDK's
+      # own jitter; widen it before running at another lift height.
+      ground_plane_max_height_error_m: 0.06
+      ground_plane_max_tilt_error_deg: 6.0
+
+      # Readiness prior (docs/readiness_prior_plan.md): the frame where the
+      # human became manipulation-ready in the passive video, placed in the
+      # ZED view by VGGT-1B (the stance service), gives the human's feet and
+      # heading and so the bearing the robot docks from.
+      # Events come from `nav-planner-readiness VIDEO` (nav_planner/outputs/
+      # <recording>/manipulation_events_<version>.json). Off by default;
+      # --readiness-prior / --readiness-events / --readiness-prior-source and
+      # the Web UI "Readiness prior" checkbox override per run. Independent of
+      # navigation_planner (the two ablations do not share memory_path).
+      readiness_prior:
+        enabled: false
+        events_path: null
+        # ready_frame = the method; nav_frame = the t_ready - 2 s walking frame
+        # (ablation).
+        source: ready_frame
+        # Pose transfer backend. vggt: the VGGT-1B stance service
+        # (services/vggt_stance, port 8117; on the Jetson start it with
+        # YOR_START_VGGT=1 ./yor_agent/start_services.sh jetson). pnp: SIFT + PnP
+        # against the ZED depth, the Phase 0 method kept as an ablation.
+        method: vggt
+        vggt_service_url: http://127.0.0.1:8117
+        vggt_timeout_s: 60.0
+        # Event frames sent with the ZED view; the `source` frame gives the stance.
+        vggt_frames: [nav, ready]
+        # Feet = head - stance_offset_m along the heading; a head within
+        # near_object_m of the object docks from heading + 180 deg.
+        stance_offset_m: 0.30
+        near_object_m: 0.30
+        # Gates on the VGGT solution: head height above the floor and the
+        # depth-scale IQR ratio.
+        min_height_m: 1.2
+        max_height_m: 2.1
+        max_scale_iqr_ratio: 2.0
+        # pnp thresholds (ablation only).
+        min_inliers: 30
+        max_reprojection_error_px: 8.0
+        # Already within docking distance but on the wrong side by more than
+        # this: re-dock to the prior bearing instead of the shortcut.
+        max_bearing_error_deg: 45.0
+        # Nav2 failed on the prior goal: try these offsets, then the arrival bearing.
+        retry_bearing_offsets_deg: [45.0, -45.0]
+
+  prepare_for_manipulation:
+    # Required: object_name and keyword-only arm="left" or arm="right". Call
+    # only when the object is already visible and docking has placed the robot
+    # near the manipulation workspace. The primitive does not search for or
+    # center an off-screen object.
+    exposed: true
+    defaults: {}
+    settings:
+      # This is deliberately a local primitive. Targets beyond the
+      # bound fail with a recovery hint to dock/move closer. Search the local
+      # lattice below, including one bounded -0.10 m reverse offset. Every
+      # collision-safe base x grasp pair is cheaply ranked, then a diverse
+      # bounded shortlist is certified by exact parallel Pi IK; cuRobo is
+      # intentionally deferred to goto_grasp_pose.
+      # When SAM3 succeeds but its mask has too few metric ZED samples, acquire
+      # at most two additional RGB-D observations and rerun SAM3 while stopped.
+      sam3_depth_retry_count: 2
+      maximum_initial_target_distance_m: 0.8
+      candidate_forward_offsets_m: [-0.10, -0.05, 0.0, 0.05, 0.10, 0.15, 0.20]
+      candidate_lateral_offsets_m: [-0.15, -0.10, -0.05, 0.0, 0.05, 0.10, 0.15]
+      candidate_yaw_offsets_deg: [-15.0, -10.0, -5.0, 0.0, 5.0, 10.0, 15.0]
+      # 7 x 7 x 7. The upper bound may exceed the configured grid size; the
+      # controller still rejects a limit that would silently truncate it.
+      candidate_base_limit: 729
+      # Evaluate a broad GraspGen-X pool with Pi, then retain only strict
+      # ik_converged goals. goto_grasp_pose still consumes at most 16 goals.
+      grasp_candidate_limit: 64
+      # Expand the configured lattice x collision-safe-grasp transforms. First
+      # shortlist nearer motion tiers, then use the non-certifying workspace
+      # proxy and round-robin grasps across up to 128 bases. The first 512
+      # queries cover up to four grasps for each shortlisted base;
+      # pi_ik_candidate_limit is the total cap and remaining capacity is
+      # reserved for robustness.
+      pi_ik_shortlist_base_limit: 128
+      pi_ik_grasps_per_base: 4
+      pi_ik_candidate_limit: 1024
+      # Fully evaluate 128 x 4 nominal base/grasp pairs before spending any
+      # query capacity on perturbed poses.
+      pi_ik_nominal_candidate_limit: 512
+      pi_ik_preferred_tcp_radius_m: 0.42
+      # Run exact Pi IK as progressive waves across the four persistent Mink
+      # workers. Completed waves are retained and the next wave is launched
+      # only when its measured runtime is expected to fit the remaining
+      # budget. A final wave may shrink to use the remaining time efficiently.
+      ik_batch_size: 32
+      # The largest budget these settings accept. Docking ends just beyond
+      # no-motion reach, so the search usually has to certify a moved base
+      # pose, and a shorter budget ran out before any pose converged.
+      pi_ik_compute_budget_s: 30.0
+      # Robustness is a soft ranking signal, not a readiness gate: nominal
+      # strict Pi convergence is sufficient because the actual arrival pose is
+      # sampled and strictly certified again after motion. For the best nominal
+      # results, test +/-1 cm along each planar axis and +/-1 degree yaw; prefer
+      # candidates with at least three converged members including nominal.
+      robustness_enabled: true
+      robustness_position_perturbation_m: 0.010
+      robustness_yaw_perturbation_deg: 1.0
+      robustness_preferred_converged_variants: 3
+      # The lowest motion tier's full grasp set is queried first and the
+      # nominal wave stops once that tier is settled (the final ranking is
+      # tier-first, so later bases cannot win). On 2026-09-03 real-robot traces
+      # the tier-0 current pose was decided by the first 0.75 s Pi batch while
+      # the wave then spent the remaining 14 s of its budget.
+      pi_ik_best_tier_early_exit: true
+      # When no base motion is needed, the evaluation's own collision-safe,
+      # Pi-converged goalset is certified directly instead of re-running SAM3,
+      # the grasp model and Pi IK on the same observation (about 12-15 s).
+      # After any base motion the actual arrival pose is always re-certified.
+      reuse_virtual_certificate_without_motion: true
+      minimum_feasible_grasps: 1
+      # Strict Pi convergence remains mandatory. Among ready candidates, prefer
+      # the lowest normalized motion tier; translations within 2 cm and yaws
+      # within 2 degrees share one near-equivalent unit, after which grasp
+      # count, robustness, and joint travel break ties inside the tier.
+      candidate_translation_bucket_m: 0.020
+      candidate_yaw_bucket_deg: 2.0
+      grasp_approach_m: 0.10
+      # Candidate translations/yaws are defined at the swerve center. Include
+      # the calibrated camera lever arm when predicting each virtual RGB-D pose.
+      base_to_camera_forward_m: 0.2143
+      base_to_camera_left_m: 0.0603
+
+      # Derive one absolute world-frame SE(2) target and track it in a single
+      # controller call with simultaneous holonomic translation/yaw correction.
+      # Reverse correction remains enabled. There is no rear-facing clearance
+      # sensor, so reverse uses odometry feedback but cannot detect an obstacle
+      # behind the robot. These maxima remain below Pi limits.
+      max_linear_mps: 0.15
+      max_lateral_mps: 0.12
+      max_yaw_rad_s: 0.3
+      position_tolerance_m: 0.030
+      yaw_tolerance_deg: 3.0
+      motion_timeout_s: 20.0
+      # A refused base motion hands its turn to the next certified base pose in
+      # the search's ranked order, up to this many, and once every certified
+      # pose's motion is refused the search resumes into the tiers the best-tier
+      # early exit skipped, within the same budget. Otherwise one depth cell in
+      # the swept footprint ends the primitive at the first selected pose.
+      motion_alternative_limit: 8
+      continue_search_after_refused_motions: true
+      # The actual arrival pose is freshly sampled and strictly Pi-certified. The
+      # next sample_grasp_pose revalidates the target and consumes that exact
+      # certified goalset before goto_grasp_pose replans it.
+      # The grasp pool uses the official open-gripper swept-volume gate. Base
+      # motion has no additional readiness-specific footprint map; the shared
+      # controller retains its hard front-clearance stop.
+      ground_plane_max_age_s: 2.0
+
+  # CaP-X-style coarse navigation baseline (primitives/coarse_navigation.py).
+  # Hidden here; configs/capx_coarse_navigation.yaml exposes them and hides
+  # docking, manipulation readiness and the fine motion primitives instead.
+  go_forward:
+    # Exactly 1 m forward, with drive_straight's clearance checks.
+    exposed: false
+    defaults: {}
+
+  turn_left_45_degrees:
+    exposed: false
+    defaults: {}
+
+  turn_right_45_degrees:
+    exposed: false
+    defaults: {}
+
+  goto_planar_position:
+    # A relative planar position within the navigation distance limit, with the
+    # heading kept.
+    exposed: false
+    defaults: {}
+
+  say_something:
+    exposed: false
+    defaults: {}

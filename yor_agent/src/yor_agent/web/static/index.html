@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>YOR Policy Console</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand" aria-label="YOR Policy Console">
+          <div class="brand-mark"><span></span><span></span><span></span></div>
+          <div>
+            <div class="brand-name">YOR</div>
+            <div class="brand-subtitle">Policy console</div>
+          </div>
+        </div>
+
+        <div class="run-meta">
+          <span class="eyebrow">Config</span>
+          <span id="config-path" class="path">Loading…</span>
+        </div>
+
+        <div class="run-actions">
+          <div id="connection" class="connection"><i></i><span>Connecting</span></div>
+          <div id="status-pill" class="status-pill idle">Idle</div>
+          <button id="start-button" class="button primary" type="button" disabled>Start run</button>
+          <button
+            id="manual-button"
+            class="button"
+            type="button"
+            title="Manual-policy run: you type each turn's program instead of the LLM (navigation planner skipped)"
+            disabled
+          >
+            Debug
+          </button>
+          <button
+            id="stop-button"
+            class="button danger"
+            type="button"
+            title="Request a normal zero-velocity stop (not an emergency stop)"
+            disabled
+          >
+            Stop
+          </button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="left-column">
+          <article class="panel camera-panel">
+            <div class="panel-heading">
+              <div>
+                <div class="heading-row">
+                  <span class="live-dot"></span>
+                  <h2 id="camera-title">LLM camera input</h2>
+                </div>
+                <p id="camera-description">The exact resized PNG attached to the next model request</p>
+              </div>
+              <div class="camera-heading-right">
+                <div class="view-switch" role="group" aria-label="Camera view">
+                  <button id="llm-view" class="active" type="button">LLM input</button>
+                  <button id="live-view" type="button">Live</button>
+                </div>
+                <div class="frame-meta">
+                  <span id="frame-turn">Waiting for run</span>
+                  <span id="frame-time">—</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="camera-stage">
+              <img id="camera-image" alt="Latest RGB frame sent to the model" hidden />
+              <div id="camera-empty" class="empty-camera">
+                <div class="aperture" aria-hidden="true"></div>
+                <strong>No model frame yet</strong>
+                <span>Start a run to initialize the ZED observation.</span>
+              </div>
+              <div class="reticle" aria-hidden="true"><i></i><i></i></div>
+              <div class="camera-tag"><span>RGB</span><span id="image-shape">—</span></div>
+            </div>
+
+            <div class="telemetry-grid">
+              <div class="telemetry-item">
+                <span>Pose x / y</span>
+                <strong id="pose-xy">—</strong>
+              </div>
+              <div class="telemetry-item">
+                <span>Yaw</span>
+                <strong id="pose-yaw">—</strong>
+              </div>
+              <div class="telemetry-item">
+                <span>Velocity</span>
+                <strong id="velocity">—</strong>
+              </div>
+              <div class="telemetry-item">
+                <span>Safety</span>
+                <strong id="safety">Awaiting status</strong>
+              </div>
+            </div>
+          </article>
+
+          <article class="panel task-panel">
+            <div class="panel-heading compact">
+              <div>
+                <span class="eyebrow">Operator intent</span>
+                <h2>Task prompt</h2>
+              </div>
+              <button id="edit-task" class="text-button" type="button">Edit</button>
+            </div>
+            <textarea id="task-input" rows="3" spellcheck="true" readonly></textarea>
+            <div class="task-settings">
+              <label>
+                <span>Model</span>
+                <select id="model-input">
+                  <optgroup label="Google Vertex AI">
+                    <option value="vertex::gemini-3.1-pro-preview">Gemini 3.1 Pro Preview</option>
+                    <option value="vertex::gemini-2.5-pro">Gemini 2.5 Pro</option>
+                  </optgroup>
+                  <optgroup label="Alibaba Cloud Qwen">
+                    <option value="qwen::qwen3.7-plus">Qwen 3.7 Plus</option>
+                    <option value="qwen::qwen3.6-plus">Qwen 3.6 Plus</option>
+                    <option value="qwen::qwen3.6-flash">Qwen 3.6 Flash</option>
+                  </optgroup>
+                  <optgroup label="DeepSeek Official API">
+                    <option value="deepseek::deepseek-v4-flash-vision-exp">DeepSeek V4 Flash Vision Exp</option>
+                  </optgroup>
+                  <optgroup label="OpenAI API">
+                    <option value="openai::gpt-5.6-sol">GPT-5.6 Sol</option>
+                  </optgroup>
+                  <optgroup label="Operator">
+                    <option value="manual::operator">Manual (operator)</option>
+                  </optgroup>
+                </select>
+              </label>
+              <label class="small-field">
+                <span>Temperature</span>
+                <input id="temperature-input" type="number" min="0" max="2" step="0.1" />
+              </label>
+              <label class="small-field">
+                <span>Max turns</span>
+                <input id="turns-input" type="number" min="1" max="100" step="1" />
+              </label>
+              <label
+                class="small-field checkbox-field"
+                title="Use the passive-video readiness prior in dock_to_visible_object (needs an events JSON: --readiness-events or the config)"
+              >
+                <input id="readiness-prior-input" type="checkbox" />
+                <span>Readiness prior</span>
+              </label>
+            </div>
+          </article>
+
+          <article id="review-panel" class="panel program-panel review-panel" hidden>
+            <div class="panel-heading compact">
+              <div>
+                <span class="eyebrow">Experiment episode</span>
+                <h2>Episode review</h2>
+              </div>
+              <span id="review-summary" class="program-status"></span>
+            </div>
+            <div class="review-grid">
+              <fieldset class="review-choice">
+                <legend>Did the robot succeed at the task?</legend>
+                <label><input type="radio" name="review-success" value="true" /> Success</label>
+                <label><input type="radio" name="review-success" value="false" /> Failure</label>
+                <label><input type="radio" name="review-success" value="null" /> Unsure</label>
+              </fieldset>
+              <fieldset class="review-choice">
+                <legend>Adopt it as an experiment result?</legend>
+                <label><input type="radio" name="review-adopt" value="true" /> Adopt</label>
+                <label><input type="radio" name="review-adopt" value="false" /> Exclude</label>
+              </fieldset>
+            </div>
+            <input id="review-reason" type="text" placeholder="Reason for excluding it (one line)" hidden />
+            <textarea id="review-note" rows="2" placeholder="Note (optional)"></textarea>
+            <div class="program-actions">
+              <span class="program-hint">Review every episode, including stopped ones; the next run starts after the review is saved to result.json.</span>
+              <div class="program-buttons">
+                <button id="submit-review" class="button primary" type="button" disabled>Save review</button>
+              </div>
+            </div>
+          </article>
+
+          <article id="program-panel" class="panel program-panel" hidden>
+            <div class="panel-heading compact">
+              <div>
+                <span class="eyebrow">Manual policy</span>
+                <h2>Program</h2>
+              </div>
+              <span id="program-status" class="program-status">Waiting for run</span>
+            </div>
+            <div id="primitive-chips" class="primitive-chips" hidden aria-label="Exposed primitives"></div>
+            <details id="primitive-docs" class="primitive-docs" hidden>
+              <summary id="primitive-docs-summary">Primitive reference</summary>
+              <pre id="primitive-docs-text"></pre>
+            </details>
+            <textarea
+              id="program-input"
+              rows="3"
+              spellcheck="false"
+              placeholder="drive_straight(0.5)"
+              aria-label="Operator program for the next turn"
+            ></textarea>
+            <div class="program-actions">
+              <span class="program-hint">One program per turn, executed exactly like a generated policy. Call finish(reason="...") to end the run. Ctrl/Cmd+Enter runs.</span>
+              <div class="program-buttons">
+                <button id="reuse-program" class="text-button" type="button" title="Restore the last submitted program" disabled>Reuse last</button>
+                <button id="run-program" class="button primary" type="button" disabled>Run program</button>
+              </div>
+            </div>
+          </article>
+        </section>
+
+        <section class="panel activity-panel">
+          <div class="panel-heading activity-heading">
+            <div>
+              <span class="eyebrow">Execution stream</span>
+              <h2>Agent timeline</h2>
+            </div>
+            <div class="timeline-actions">
+              <span id="trace-path" class="trace-path" title="Trace output">No trace yet</span>
+              <button id="clear-timeline" class="icon-button" type="button" title="Clear displayed events">Clear</button>
+            </div>
+          </div>
+          <div id="timeline" class="timeline" aria-live="polite">
+            <div id="timeline-empty" class="timeline-empty">
+              <div class="empty-lines"><i></i><i></i><i></i></div>
+              <strong>Ready for a supervised run</strong>
+              <span>Generated policies, primitive calls, and execution output appear here.</span>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

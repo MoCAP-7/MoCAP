@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yor-agent"
+version = "0.1.0"
+description = "Minimal code-as-policy agent for the physical YOR robot"
+requires-python = ">=3.10"
+dependencies = [
+    # NVIDIA's Jetson PyTorch 2.8 wheel is compiled against the NumPy 1.x ABI.
+    "numpy>=1.26,<2",
+    "pyyaml>=6.0",
+    "pillow>=10.0",
+    "google-genai>=2.17,<3",
+    "openai>=1.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+
+# ``commlink`` (leased Pi base RPC transport) and ``yor-navdp`` (atomic ZED
+# stream transport) remain deployment dependencies installed on the robot
+# hosts. Their service entry points live under ``yor_agent/services``.
+
+[project.optional-dependencies]
+# Manipulation primitives: the GraspGen-X ZMQ client (pyzmq/msgpack-numpy)
+# and the SAM3 HTTP client's requests dependency. The SAM3/GraspGen-X/
+# Contact-GraspNet model servers themselves run as separate processes; see
+# docs/real_robot_runbook.md.
+manipulation = [
+    "pyzmq>=25",
+    "msgpack-numpy>=0.4",
+    "requests>=2.31",
+]
+fast-detection = [
+    # YOLOE-26 weights and MobileCLIP2 support were introduced with 8.4.
+    "ultralytics>=8.4,<9",
+    # Required by YOLOE's text encoder. Pin the Ultralytics fork so inference
+    # never performs an implicit runtime package installation.
+    "clip @ git+https://github.com/ultralytics/CLIP.git@488e81a6711eea7346872b46ea928b367da8889d",
+]
+visualization = [
+    "viser",
+    # OpenCV 5 requires NumPy 2, which is incompatible with the Jetson wheel.
+    "opencv-python>=4.8,<5",
+]
+
+[project.scripts]
+yor-agent = "yor_agent.launch:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["yor_agent*"]
+
+[tool.setuptools.package-data]
+"yor_agent.web" = ["static/*"]
+"yor_agent.robot" = ["assets/graspgenx/gripper_descriptions/assets/x_grippers/*/config.json"]

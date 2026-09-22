@@ -1,0 +1,10 @@
+# Install Jetson PyTorch 2.8/cu126 first, then install cuRobo from the pinned
+# checkout documented in docs/real_robot_runbook.md.
+numpy==1.26.4
+scipy==1.15.3
+trimesh==4.8.3
+yourdfpy==0.0.60
+pyzmq==27.0.1
+msgpack==1.1.1
+msgpack-numpy==0.4.8
+pyyaml>=6.0

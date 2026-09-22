@@ -1,0 +1,326 @@
+# Supervised real-robot navigation + manipulation. One physical robot: never
+# run two of these, and never run this alongside configs/navigation.yaml.
+primitive_config: primitive_config.yaml
+
+task:
+  id: move_to_table_grasp_pen
+  instruction: >
+    Grasp the small cardboard box on the table, carry it securely to the trash
+    bin, and release it into the bin.
+
+model:
+  provider: deepseek
+  name: deepseek-v4-flash-vision-exp
+  enable_thinking: false
+  temperature: 1.0
+  max_tokens: 20480
+
+agent:
+  # Bound on model turns for one supervised run. Not a task verifier.
+  max_turns: 100
+
+robot:
+  base_rpc_host: 192.168.1.10
+  base_rpc_port: 5557
+  zed_host: 127.0.0.1
+  zed_port: 6000
+  zed_transport: atomic
+  published_color_order: auto
+  arm_rpc_host: 192.168.1.10
+  arm_rpc_port: 5558
+  require_arms: true
+  observation_timeout_s: 3.0
+  # See configs/navigation.yaml for why this is raised from the 0.30 default.
+  frame_max_age_s: 1.2
+  navigation:
+    control_hz: 20.0
+    pose_max_age_s: 1.2
+    max_distance_m: 2.0
+    # Reverse has no rear obstacle sensing (only cells remembered within the
+    # same call), so keep each call short. It is long enough for the readiness
+    # trial to back the base out of a docked pose in one step before the next
+    # bearing; keep the space behind a docked base clear while it runs.
+    max_reverse_distance_m: 0.30
+    max_turn_rad: 3.141592653589793
+    default_linear_mps: 0.18
+    default_reverse_mps: 0.08
+    default_yaw_rad_s: 0.35
+    # Manipulation alignment needs enough wheel speed to break static friction
+    # during the final few centimeters/degrees of closed-loop correction.
+    min_linear_mps: 0.08
+    min_yaw_rad_s: 0.18
+    yaw_kp: 2.0
+    # Allow physical steering alignment, drivetrain deadband, and final settle
+    # cycles in automatically timed turn_relative/drive_straight calls.
+    auto_timeout_scale: 7.0
+    auto_timeout_overhead_s: 5.0
+    # Legacy central-depth gate, used only when the manipulation camera
+    # calibration (manipulation.camera_intrinsics plus the docking floor-plane
+    # settings) is unavailable: stop below 0.50 m measured from the camera.
+    min_front_clearance_m: 0.50
+    # Footprint-swept clearance (robot/footprint_clearance.py). Forward and
+    # lateral command components are checked against live ZED points plus the
+    # occupied cells seen earlier in the same call, swept by the reaction
+    # horizon (frame age + command latency + Pi lease) and the S-curve braking
+    # distance. The camera only sees ahead: a lateral or reverse component is
+    # protected only by cells that were seen earlier in the same call, and
+    # yaw is not swept in this phase.
+    swept_clearance: true
+    command_latency_s: 0.10
+    lease_s: 0.25
+    brake_accel_mps2: 0.30
+    clearance_margin_m: 0.05
+    clearance_cell_m: 0.05
+    # A cell needs this many depth points to count; memory cells are certified.
+    clearance_cell_min_points: 3
+    clearance_pixel_stride: 2
+    clearance_max_depth_m: 6.0
+    # Points within this distance of a layer boundary count for both layers.
+    layer_z_tolerance_m: 0.03
+    # Replace the static `arms` layer with height-resolved bands built from
+    # the collision spheres the depth self-filter already computes for the
+    # live joint state. The static layer extrudes the gripper's 0.52 m front
+    # over z 0.27-1.45, so a 0.72 m desk top is charged against the fingers
+    # even though (FK, travel pose) the arms only reach 0.48 m and only
+    # between z 0.55 and 0.65 - which stopped the base 0.6 m short of every
+    # table (2026-09-04 12:34-12:41). Set false to fall back to the static
+    # layer; any missing arm status or camera geometry falls back on its own.
+    arm_footprint_from_spheres: true
+    arm_footprint_layer: arms
+    arm_footprint_band_m: 0.05
+    # Sideways pad, the same 0.05 m the rest of this model carries. It used to
+    # be 0.16 to reach a 1.20 m arm span attributed to a 2026-09-03 tape
+    # measurement that was never taken; the sphere envelope is the only
+    # measurement there has ever been. Padding to that figure drew the arms
+    # 0.638 m to each side against a true 0.478 m, so a 1.27 m-wide model
+    # refused aisles the 0.95 m-wide robot fits through (2026-09-08 22:16).
+    arm_footprint_lateral_margin_m: 0.05
+    # Forward pad, and much smaller on purpose. Forward the sphere model does
+    # NOT under-state the hardware: FK reaches 0.482 m against the 0.47 m the
+    # tape implies, so this only carries the repo's usual 0.05 m. Using the
+    # sideways figure here pushed the modelled gripper to 0.615 m, past the
+    # static outline's 0.52 m, and refused a prepare nudge by 7 mm that the
+    # old model would have allowed (2026-09-04 15:29).
+    arm_footprint_forward_margin_m: 0.05
+    # Vertical pad on every arm sphere, above and below. With the travel pose
+    # of 2026-09-13 the parts that reach past the body pass above a support
+    # surface at working height instead of below it, so the pad under them is
+    # what keeps them off it, and it has to cover what the gate cannot see:
+    # the camera's depth error near the image edges (a surface seen there
+    # reads lower than it is), the arm's tracking error below the service's
+    # e-stop threshold, and the camera-to-arm calibration. It was 0.01 (the
+    # sphere erosion alone) while the grippers travelled below such surfaces;
+    # with 0.06 m of modelled clearance above one the forearm touched it
+    # (2026-09-13 23:47), so the pad exceeds that error. At 0.10 the pad
+    # charged furniture tops beside the arms to them, and the arm layers
+    # refused over a third of the forward steps of office runs
+    # (2026-09-15); this keeps a small margin above the contact case.
+    arm_footprint_z_margin_m: 0.07
+    # Only the vertical pad is widened for such a surface. Inside the core pad
+    # (the sphere erosion alone, as before the pad was widened) a cell is at
+    # the arms' own height and keeps the full horizontal pads and sweep
+    # margin. A cell only the wider pad reaches is below or above the
+    # hardware: it gets no forward pad and a small sweep margin, on top of
+    # the reaction and braking travel every layer sweeps, so the arms still
+    # may not pass over it but may stop short of its edge. Charging it with
+    # the full pads refused every forward step toward a table whose near
+    # edge the arms stopped short of (2026-09-14).
+    arm_footprint_core_z_margin_m: 0.01
+    arm_footprint_underside_forward_margin_m: 0.0
+    arm_footprint_underside_clearance_margin_m: 0.01
+    # Grown around the body polygon, which stands in for structure the URDF
+    # omits. The chassis and lift column sit well inside it, but the mast and
+    # the ZED head are unmeasured and the camera's optical centre is already
+    # at x = 0.2143 against a 0.22 body front. Measure them and tighten this.
+    arm_footprint_structure_margin_m: 0.05
+    # Vertical pad of the Nav2 arms collision monitor (nav2_params.py), not
+    # read by the gate above. Nav2 drives and turns through a docking goal on
+    # one padded outline; banded with only the core pad, the final turn of a
+    # goal carried an arm into a table corner (2026-09-14), so it keeps the
+    # wider pad.
+    nav2_arm_band_z_margin_m: 0.10
+    # Coarse camera-blind guard: below this fraction of valid depth in the
+    # lower image band the frame is rejected (depth_mostly_invalid). The ZED
+    # service's confidence filters leave only ~0.21 valid on the open lab
+    # floor (measured 2026-09-03), so this must stay well below that; unknown
+    # space ahead is judged per image column (max_unknown_sweep_fraction).
+    min_valid_depth_fraction: 0.05
+    # If more than this fraction of the rays through the area about to be
+    # entered have no depth, that area is unobserved: fail closed.
+    max_unknown_sweep_fraction: 0.30
+    footprint:
+      # Measured 2026-09-03 with the arms in the travel pose (see
+      # docs/collision_avoidance_plan.md). Base frame: swerve center, +x
+      # forward, +y left; 5 cm margins included. body_polygon_xy is where the
+      # robot physically stands; only cells inside it are ignored.
+      base_to_camera_forward_m: 0.2143
+      base_to_camera_left_m: 0.0603
+      body_polygon_xy: [[0.22, 0.27], [-0.22, 0.27], [-0.22, -0.27], [0.22, -0.27]]
+      layers:
+        - name: chassis
+          z_min: 0.10
+          z_max: 0.27
+          polygon_xy: [[0.22, 0.27], [-0.22, 0.27], [-0.22, -0.27], [0.22, -0.27]]
+        # Fallback used only when the live sphere envelope is unavailable, so
+        # it is drawn around that envelope plus the usual 0.05 m: the travel
+        # pose reaches 0.457 m ahead of the swerve centre and 0.433 m to each
+        # side (deployed sphere model, 2026-09-10). The +-0.65 it used to
+        # carry came from a 1.20 m arm span that was never measured.
+        - name: arms
+          z_min: 0.27
+          z_max: 1.45
+          polygon_xy: [[0.51, 0.49], [-0.20, 0.49], [-0.20, -0.49], [0.51, -0.49]]
+  manipulation:
+    # Nominal calibration for ZED2i SN33030818 at the publisher's VGA mode.
+    camera_calibration_resolution: [672, 376]
+    camera_intrinsics:
+      - [267.214, 0.0, 337.181]
+      - [0.0, 267.150, 182.288]
+      - [0.0, 0.0, 1.0]
+    # Eye-to-hand calibration collected 2026-08-09 using flange-mounted
+    # AprilTags. Each matrix maps an OpenCV ZED optical point
+    # [right, down, forward] into that Nero's base frame. Held-out median
+    # metric residual: left 2.7 mm, right-v2 2.5 mm (PnP solutions).
+    left_arm_from_camera:
+      - [-0.0070890504, -0.9319165463, -0.3626034970, 0.0704736830]
+      - [0.0108356263, -0.3626629077, 0.9318573950, 0.1894998913]
+      - [-0.9999161638, 0.0026769481, 0.0126688350, -0.0631538280]
+      - [0.0000000000, 0.0000000000, 0.0000000000, 1.0000000000]
+    right_arm_from_camera:
+      - [-0.0024049527, -0.9349152552, -0.3548629056, 0.0675204963]
+      - [0.0178854535, 0.3547669540, -0.9347836749, -0.1882714648]
+      - [0.9998371501, -0.0085949945, 0.0158681856, -0.1820106086]
+      - [0.0000000000, 0.0000000000, 0.0000000000, 1.0000000000]
+    # Offline-fitted collision spheres. Runtime filtering only performs FK
+    # when joint feedback changes, then applies one cached depth envelope.
+    robot_self_filter:
+      enabled: true
+      urdf_path: /home/yor/codefield/YOR/yor_agent/.runtime/grasp_motion/nero_with_official_gripper.urdf
+      spheres_path: /home/yor/codefield/YOR/yor_agent/.runtime/grasp_motion/nero_with_official_gripper.yml
+      sphere_erosion_m: 0.008
+      depth_tolerance_m: 0.010
+      # The depth mask draws the spheres this much larger than the eroded ones
+      # the footprint uses: the 8 mm erosion back plus 10 mm. In the rest pose
+      # the left gripper sits at the left image border 0.45-0.5 m from the
+      # camera, and every pixel of it the mask missed lay within 4.5 px of the
+      # eroded silhouette (2026-09-10); 18 mm there is about 10 px.
+      mask_padding_m: 0.018
+      joint_change_tolerance_rad: 0.002
+      require_both_arms: true
+      arm_status_poll_hz: 2.0
+    sam3_score_threshold: 0.05
+    # A thin marker at the docked pose yields about 56-62 genuine ZED depth
+    # samples. Forty was validated against the live GraspGen-X service; do not
+    # lower this further without repeating the target-anchor checks.
+    minimum_metric_depth_points: 40
+    grasp_backend: graspgenx
+    graspgenx_host: 127.0.0.1
+    graspgenx_port: 5556
+    graspgenx_timeout_ms: 180000
+    graspgenx_planner: diffusion
+    graspgenx_min_object_points: 40
+    graspgenx_num_grasps: 200
+    graspgenx_score_threshold: -1.0
+    graspgenx_topk_num_grasps: 100
+    # Same physical parallel-jaw fingers as NVIDIA's official piper_hand
+    # profile; Nero-specific TCP geometry remains configured separately.
+    graspgenx_gripper_profile: piper_hand
+    # Modelled gripper_base -> Pi TCP distance. The Pi TCP physically sits at
+    # gripper_base + 0.105 (the open grasp volume spans Z 0.0775 .. 0.1325 and
+    # the fingertips sit at 0.13), so the gripper lands ahead of the predicted
+    # pose by whatever this exceeds 0.105 and the object seats that much deeper.
+    # 0.115 (+10 mm) still pinched with the fingertips only (2026-09-07), so
+    # seat another 20 mm: 0.135 places the object 30 mm deeper than predicted.
+    graspgenx_origin_to_tcp_m: 0.135
+    graspgenx_to_nero_tcp_rpy_rad: [0.0, 0.0, 1.5707963267948966]
+    # Reject candidates whose backend-provided jaw-center anchor is not
+    # actually near the metric point cloud selected by the SAM3 mask.
+    grasp_candidate_distance_reference: contact
+    grasp_candidate_max_object_distance_m: 0.10
+    # No-motion Mink IK candidate evaluation on the Raspberry Pi.
+    grasp_ik_precheck_enabled: true
+    # Pi IK is the strict grasp feasibility gate. Evaluate a broad raw pool;
+    # only candidates with ik_converged=true can enter the cached goalset.
+    grasp_ik_precheck_candidate_count: 64
+    # CGN gripper-base origin -> jaw-center TCP along CGN local +Z.
+    contact_graspnet_origin_to_tcp_m: 0.1034
+    contact_graspnet_to_nero_tcp_rpy_rad: [0.0, 0.0, -1.5707963267948966]
+    grasp_ik_parallel_jaw_symmetry_enabled: false
+    # Retained for goto diagnostics only. sample_grasp_pose does not use this
+    # residual band as a fallback: it requires Pi ik_converged=true.
+    grasp_ik_acceptable_position_error_m: 0.020
+    grasp_ik_acceptable_rotation_error_rad: 0.10
+    # Layer 1: official open-gripper collision mesh against every observed
+    # non-target RGB-D point, including a swept local-Z pre-grasp corridor.
+    grasp_collision_check_enabled: true
+    grasp_collision_clearance_m: 0.008
+    grasp_collision_approach_m: 0.10
+    grasp_collision_approach_samples: 6
+    # Exclude only the target mask. Dilation could hide an adjacent support
+    # surface or another object, so the production-safe default is zero.
+    grasp_collision_target_mask_dilation_pixels: 0
+    grasp_collision_pixel_stride: 2
+    grasp_collision_point_voxel_m: 0.008
+    grasp_collision_max_scene_points: 30000
+    # Layer 2: isolated Jetson cuRobo service. It refreshes SAM3/RGB-D before
+    # planning and the Pi independently validates every joint waypoint.
+    grasp_motion_host: 127.0.0.1
+    grasp_motion_port: 5559
+    # Readiness no longer submits a cuRobo batch; this timeout applies to the
+    # final goto_grasp_pose trajectory request and lightweight mesh checks.
+    grasp_motion_timeout_ms: 180000
+    # Keep the execution-time mesh gate consistent with sampling. Execution
+    # still refreshes RGB-D and uses denser sweep sampling before cuRobo plans.
+    grasp_motion_collision_clearance_m: 0.008
+    grasp_motion_approach_samples: 8
+    grasp_motion_scene_voxel_m: 0.012
+    # Optional cuRobo retry bounds forwarded to the planner service. Unset keeps
+    # cuRobo's defaults (five attempts, PRM graph seeding from the second
+    # attempt). Real-robot traces on 2026-09-03 showed 58 s (grasp) and 89 s
+    # (home) planning_time_s; every response now carries a `timings` breakdown
+    # so these can be lowered once measured with a fresh (non-stale) world.
+    # grasp_motion_max_attempts: 3
+    # grasp_motion_enable_graph_attempt: 1
+    # cuRobo re-solves each trajectory 1-3 extra times with a shorter time
+    # step for time-optimality (home 3, grasp/lift 1). The Pi paces waypoints
+    # at a fixed 0.1 s, so those passes only cost planning time: Jetson
+    # 2026-09-04, fingers 8 mm / base 16 mm shell, home 16.7 -> 4.3 s, grasp
+    # 26.2 -> 13.4 s, lift 23.0 -> 12.9 s. Home paths then carry ~20 more
+    # waypoints (81 vs 61) at 0.1 s spacing.
+    grasp_motion_finetune_attempts: 0
+    # Observed-world representation on the planner service. cuRobo's mesh
+    # query cost tracks the triangle count: 2026-09-04 Jetson benchmark, same
+    # 12.7k-point table scene, per-voxel mesh 37.8k triangles -> 63 s per plan,
+    # almost empty world -> 7 s. The service defaults to the greedy mesh (same
+    # surface, merged coplanar faces) and a 1.6 m reach crop. A coarse pitch
+    # for points farther than the fine radius from the tool centres cuts the
+    # count further; the fine pitch (grasp_motion_scene_voxel_m) stays near
+    # the current TCP and the grasp targets.
+    # cuRobo's mesh kernel searches each mesh out to half its bounding-box
+    # diagonal; services/grasp_motion/patch_curobo_mesh_query.py bounds it to
+    # 0.1 m (required on every cuRobo checkout, see the grasp_motion README).
+    # Measured 2026-09-04: merged (greedy) or tiled meshes were slower than
+    # cuRobo's stock per-voxel mesh, so per_voxel in one mesh slot is the
+    # default; the other modes remain for experiments only.
+    # grasp_motion_scene_mesh: per_voxel         # or greedy / tiled (experimental)
+    # grasp_motion_scene_tile_m: 0.30
+    # grasp_motion_scene_coarse_voxel_m: 0.03
+    # grasp_motion_scene_fine_radius_m: 0.30
+    # grasp_motion_scene_crop_radius_m: 1.6
+    # Optional execution-time waypoint step cap (rad). The Pi accepts each
+    # waypoint only after three consecutive 50 ms reads within 0.035 rad while
+    # cuRobo samples the path every 0.1 s (~0.03-0.05 rad apart), so free-space
+    # execution time tracks waypoint count (2026-09-03 traces: ~0.15 s per
+    # waypoint, 101-waypoint grasp path ~15 s). A cap keeps only planner
+    # samples with adjacent steps <= cap on approach and home paths; contact,
+    # lift and retreat segments are always sent unchanged. Unset = off.
+    # Enable only after a supervised free-space check on the robot.
+    # grasp_motion_execution_step_rad: 0.09
+    grasp_execution_target_tolerance_m: 0.12
+    prepared_grasp_certificate_max_age_s: 60.0
+    prepared_grasp_base_translation_tolerance_m: 0.02
+    prepared_grasp_base_yaw_tolerance_rad: 0.017453292519943295
+    prepared_grasp_joint_tolerance_rad: 0.02
+
+trace:
+  output_dir: ./outputs/move_to_table_grasp_pen

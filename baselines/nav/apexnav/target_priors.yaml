@@ -1,0 +1,71 @@
+# Pre-generated ApexNav LLM outputs copied from the official MP3D answer cache.
+# Unknown open-vocabulary targets remain valid: they use no similar labels,
+# confidence 0.50, and room=everywhere unless explicitly overridden at launch.
+couch:
+  similar_labels: [bed, bench, chair, dining table]
+  confidence_threshold: 0.34
+  room: living room
+tv:
+  similar_labels: [laptop, monitor, picture frame, window]
+  confidence_threshold: 0.27
+  room: living room
+chair:
+  similar_labels: [couch, toilet, stool, potted plant]
+  confidence_threshold: 0.30
+  room: everywhere
+toilet:
+  similar_labels: [chair, bench, potted plant, sink]
+  confidence_threshold: 0.27
+  room: bathroom
+bed:
+  similar_labels: [couch, dining table, bench]
+  confidence_threshold: 0.35
+  room: bedroom
+potted plant:
+  similar_labels: [lamp, teddy bear, toilet]
+  confidence_threshold: 0.25
+  room: everywhere
+cabinet:
+  similar_labels: [refrigerator, door]
+  confidence_threshold: 0.32
+  room: everywhere
+table | dining table | coffee table | desk:
+  similar_labels: [bed, couch, bench, counter]
+  confidence_threshold: 0.30
+  room: everywhere
+pillow:
+  similar_labels: [suitcase, backpack, handbag, teddy bear]
+  confidence_threshold: 0.25
+  room: everywhere
+counter:
+  similar_labels: [dining table, bed, couch, bench]
+  confidence_threshold: 0.30
+  room: living room
+sink:
+  similar_labels: [toilet, bathtub, washing machine, refrigerator]
+  confidence_threshold: 0.27
+  room: everywhere
+fireplace:
+  similar_labels: [oven, refrigerator, tv]
+  confidence_threshold: 0.30
+  room: living room
+towel:
+  similar_labels: [blanket, curtain, rug]
+  confidence_threshold: 0.25
+  room: bathroom
+nightstand:
+  similar_labels: [bench, chair, stool]
+  confidence_threshold: 0.32
+  room: bedroom
+shower:
+  similar_labels: [toilet, sink, refrigerator]
+  confidence_threshold: 0.25
+  room: bathroom
+bathtub:
+  similar_labels: [bed, couch, dining table, potted plant]
+  confidence_threshold: 0.30
+  room: bathroom
+stool:
+  similar_labels: [chair, potted plant, toilet]
+  confidence_threshold: 0.28
+  room: everywhere

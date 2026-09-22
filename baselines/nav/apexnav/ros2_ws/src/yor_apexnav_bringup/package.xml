@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>yor_apexnav_bringup</name>
+  <version>0.1.0</version>
+  <description>Isolated ROS2 Humble bringup for the ApexNav baseline on YOR.</description>
+  <maintainer email="yor@example.com">YOR</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>exploration_manager</exec_depend>
+  <exec_depend>trajectory_manager</exec_depend>
+  <exec_depend>lkh_mtsp_solver</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

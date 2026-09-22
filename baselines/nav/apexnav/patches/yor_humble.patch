@@ -1,0 +1,89 @@
+--- a/exploration_manager/CMakeLists.txt
++++ b/exploration_manager/CMakeLists.txt
+@@ -26,7 +26,7 @@
+ find_package(tf2_ros REQUIRED)
+ 
+ find_package(Eigen3 REQUIRED)
+-find_package(PCL REQUIRED)
++find_package(PCL REQUIRED COMPONENTS common features filters io kdtree octree sample_consensus search segmentation)
+ find_package(ompl REQUIRED)
+ 
+ # Include 디렉토리 설정
+--- a/path_searching/CMakeLists.txt
++++ b/path_searching/CMakeLists.txt
+@@ -18,7 +18,7 @@
+ find_package(cv_bridge REQUIRED)
+ 
+ find_package(Eigen3 REQUIRED)
+-find_package(PCL REQUIRED)
++find_package(PCL REQUIRED COMPONENTS common features filters io kdtree octree sample_consensus search segmentation)
+ find_package(ompl REQUIRED)
+ 
+ # Include 디렉토리 설정
+--- a/utils/vis_utils/CMakeLists.txt
++++ b/utils/vis_utils/CMakeLists.txt
+@@ -18,7 +18,7 @@
+ find_package(cv_bridge REQUIRED)
+ 
+ find_package(Eigen3 REQUIRED)
+-find_package(PCL REQUIRED)
++find_package(PCL REQUIRED COMPONENTS common features filters io kdtree octree sample_consensus search segmentation)
+ 
+ # Include 디렉토리 설정
+ include_directories(
+--- a/trajectory_manager/CMakeLists.txt
++++ b/trajectory_manager/CMakeLists.txt
+@@ -22,7 +22,7 @@
+ find_package(rosidl_default_generators REQUIRED)
+ 
+ find_package(Eigen3 REQUIRED)
+-find_package(PCL REQUIRED)
++find_package(PCL REQUIRED COMPONENTS common features filters io kdtree octree sample_consensus search segmentation)
+ find_package(ompl REQUIRED)
+ find_package(OsqpEigen REQUIRED)
+ 
+--- a/plan_env/CMakeLists.txt
++++ b/plan_env/CMakeLists.txt
+@@ -19,6 +19,9 @@
+ find_package(visualization_msgs REQUIRED)
+ find_package(cv_bridge REQUIRED)
+ find_package(message_filters REQUIRED)
++# Load the used PCL components before pcl_conversions; its Humble export file
++# otherwise performs an unscoped find_package(PCL) and requires VTK.
++find_package(PCL REQUIRED COMPONENTS common features filters io kdtree octree sample_consensus search segmentation)
+ find_package(pcl_conversions REQUIRED)
+ find_package(tf2 REQUIRED)
+ find_package(tf2_ros REQUIRED)
+@@ -25,7 +28,6 @@
+ find_package(rosidl_default_generators REQUIRED)
+ 
+ find_package(Eigen3 REQUIRED)
+-find_package(PCL REQUIRED)
+ find_package(OpenCV REQUIRED)
+ 
+ # 메시지 파일 생성
+--- a/plan_env/include/plan_env/map_ros.h
++++ b/plan_env/include/plan_env/map_ros.h
+@@ -16,6 +16,6 @@
+ 
+ // OpenCV for image processing
+-#include <cv_bridge/cv_bridge.hpp>
++#include <cv_bridge/cv_bridge.h>
+ 
+ // Standard ROS2 messages
+ #include <geometry_msgs/msg/pose_stamped.hpp>
+--- a/plan_env/src/map_ros.cpp
++++ b/plan_env/src/map_ros.cpp
+@@ -422,6 +422,12 @@
+   for (int v = depth_filter_margin_; v < rows - depth_filter_margin_; v += skip_pixel_) {
+     row_ptr = depth_image_->ptr<uint16_t>(v) + depth_filter_margin_;
+     for (int u = depth_filter_margin_; u < cols - depth_filter_margin_; u += skip_pixel_) {
++      // YOR reserves encoded zero for invalid/missing ZED depth. Never clear
++      // free space along a ray whose range measurement is unavailable.
++      if (*row_ptr == 0) {
++        row_ptr = row_ptr + skip_pixel_;
++        continue;
++      }
+       // Convert pixel depth value to metric distance
+       depth = (*row_ptr) * inv_factor * (depth_filter_maxdist_ - depth_filter_mindist_) +
+               depth_filter_mindist_;

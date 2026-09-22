@@ -1,0 +1,15 @@
+--- a/opt/ros/humble/share/pcl_conversions/cmake/ament_cmake_export_dependencies-extras.cmake
++++ b/opt/ros/humble/share/pcl_conversions/cmake/ament_cmake_export_dependencies-extras.cmake
+@@ -18,7 +18,11 @@
+   set(_libraries)
+   foreach(_dep ${_exported_dependencies})
+     if(NOT ${_dep}_FOUND)
+-      find_package("${_dep}" QUIET REQUIRED)
++      if(_dep STREQUAL "PCL")
++        find_package(PCL QUIET REQUIRED COMPONENTS common features filters io kdtree octree sample_consensus search segmentation)
++      else()
++        find_package("${_dep}" QUIET REQUIRED)
++      endif()
+     endif()
+     # if a package provides modern CMake interface targets use them
+     # exclusively assuming the classic CMake variables only exist for

@@ -1,0 +1,38 @@
+# Task selection and one-shot VLM navigation-memory planning for the passive-video
+# navigation experiments. The task list is used only at robot-run time; none of
+# these instructions are passed to the offline video-memory builder.
+extends: mobile_manipulation.yaml
+
+task_suite:
+  output_root: ../outputs/passive_video_tasks
+  tasks:
+    find_blue_trash_bin:
+      instruction: Navigate to the blue trash bin
+    find_printing_machine:
+      instruction: Navigate to the printing machine
+    find_cardbox_on_storage_cabinet:
+      instruction: Navigate to the small cardbox on the white storage cabinet
+    find_can_on_table:
+      instruction: Navigate to the can on the table
+    find_marker_on_table:
+      instruction: Navigate to the red marker on the table
+    grasp_cardboard_box:
+      instruction: Grasp the small cardboard box on the white storage cabinet and keep it securely held
+    grasp_can:
+      instruction: Grasp the can on the table and keep it securely held
+    find_can_and_give_back:
+      instruction: Find the can, grasp it, and return to the starting location while holding it
+    throw_box_to_trash_bin:
+      instruction: Grasp the small cardboard box on the white storage cabinet and drop it into the trash bin
+
+agent:
+  # Wall-clock limit of one run of these tasks, counted from the start of the
+  # agent loop; reaching it stops the run like the operator's Stop.
+  time_limit_s: 600
+
+navigation_planner:
+  enabled: true
+  model: gemini-3.7-flash
+  thinking_level: high
+  timeout_s: 300.0
+  max_memory_frames: 32

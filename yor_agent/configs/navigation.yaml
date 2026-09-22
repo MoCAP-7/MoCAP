@@ -1,0 +1,51 @@
+# Supervised real-robot navigation. One physical robot: never run two of these.
+primitive_config: primitive_config.yaml
+
+task:
+  id: go_to_orange_sofa
+  instruction: Go to the orange sofa until it is clearly in front of you, instead of still having some distance.
+
+model:
+  provider: vertex
+  name: gemini-3.1-pro-preview
+  temperature: 1.0
+  max_tokens: 20480
+
+agent:
+  # Bound on model turns for one supervised run. Not a task verifier.
+  max_turns: 20
+
+robot:
+  base_rpc_host: 192.168.1.10
+  base_rpc_port: 5557
+  zed_host: 127.0.0.1
+  zed_port: 6000
+  zed_transport: atomic
+  published_color_order: auto
+  observation_timeout_s: 3.0
+  # Raised from 0.30, then 0.60: the ZED publisher (neural depth mode) is
+  # GPU-bound (~99% GPU load) and stalls past 600ms on ~18% of frames, up to
+  # ~0.92s observed worst case. 1.2s clears that with margin; at the robot's
+  # 0.10 m/s cap that's still only ~12cm of blind travel. Root cause is the
+  # publisher's depth mode, not this timeout -- revisit if it switches to
+  # --depth-mode neural-light.
+  frame_max_age_s: 1.2
+  navigation:
+    control_hz: 20.0
+    pose_max_age_s: 1.2
+    max_distance_m: 2.0
+    # Reverse has no rear obstacle sensing, so keep each call short.
+    max_reverse_distance_m: 0.50
+    max_turn_rad: 3.141592653589793
+    default_linear_mps: 0.10
+    default_reverse_mps: 0.06
+    default_yaw_rad_s: 0.30
+    # Raised from the 0.055 default: turn_relative stalled ~5 deg short of
+    # target because the physical base does not respond below ~0.14 rad/s.
+    min_yaw_rad_s: 0.16
+    auto_timeout_scale: 7.0
+    auto_timeout_overhead_s: 5.0
+    min_front_clearance_m: 0.45
+
+trace:
+  output_dir: ./outputs/go_to_orange_sofa

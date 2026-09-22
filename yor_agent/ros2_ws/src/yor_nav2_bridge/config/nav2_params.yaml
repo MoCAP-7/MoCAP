@@ -1,0 +1,342 @@
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 2.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_navfn_planner/NavfnPlanner"
+      tolerance: 0.10
+      use_astar: true
+      allow_unknown: true
+
+controller_server:
+  ros__parameters:
+    controller_frequency: 20.0
+    odom_topic: /yor/odom
+    failure_tolerance: 0.3
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.001
+    min_theta_velocity_threshold: 0.001
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins: ["goal_checker"]
+    controller_plugins: ["FollowPath"]
+    progress_checker:
+      # Unlike SimpleProgressChecker, PoseProgressChecker also recognizes an
+      # in-place yaw correction as progress.  This is important at a docking
+      # goal, where only a few centimetres of translation may remain.
+      plugin: "nav2_controller::PoseProgressChecker"
+      required_movement_radius: 0.03
+      required_movement_angle: 0.05
+      movement_time_allowance: 15.0
+    goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      # ZED VIO and the semantic target estimate do not justify millimetre-level
+      # convergence; final SAM3 range verification remains the authoritative
+      # docking-distance check.
+      xy_goal_tolerance: 0.05
+      # The goal checker passes the moment the heading error enters this band,
+      # so the final rotation stops at its edge. A wide band leaves the target
+      # well to one side of the camera and changes which arm reaches it, which
+      # makes the docked pose depend on how Nav2 happened to arrive rather than
+      # on the goal heading. The base bridge rounds a slow final rotation up to
+      # the drivetrain floor, so converging further stays executable.
+      yaw_goal_tolerance: 0.10
+      stateful: true
+    FollowPath:
+      plugin: "dwb_core::DWBLocalPlanner"
+      debug_trajectory_details: false
+      min_vel_x: 0.0
+      min_vel_y: -0.18
+      max_vel_x: 0.18
+      max_vel_y: 0.18
+      max_vel_theta: 0.35
+      # The drivetrain deadband (0.05 m/s, 0.20 rad/s) is enforced by the base
+      # bridge, not here. As a DWB sample filter it removes a candidate only
+      # when BOTH speeds are below their floor -- harmless while driving,
+      # fatal at the goal: RotateToGoal makes every translating candidate
+      # illegal there, so only pure rotations survive, and of those only the
+      # few sampled above the yaw floor stayed legal. One critic penalty on
+      # that handful left nothing to command, and the base sat out the last
+      # fraction of a radian of a goal it had already reached in position.
+      min_speed_xy: 0.0
+      max_speed_xy: 0.18
+      min_speed_theta: 0.0
+      acc_lim_x: 0.30
+      acc_lim_y: 0.30
+      acc_lim_theta: 0.80
+      decel_lim_x: -0.30
+      decel_lim_y: -0.30
+      decel_lim_theta: -0.80
+      vx_samples: 12
+      vy_samples: 15
+      # Odd, so the sample set contains 0.0 exactly, and dense enough that the
+      # rates the bridge can still round up to the deadband are well covered.
+      vtheta_samples: 41
+      sim_time: 1.7
+      linear_granularity: 0.05
+      angular_granularity: 0.025
+      transform_tolerance: 0.30
+      xy_goal_tolerance: 0.05
+      trans_stopped_velocity: 0.02
+      short_circuit_trajectory_evaluation: true
+      stateful: true
+      critics:
+        - RotateToGoal
+        - Oscillation
+        - BaseObstacle
+        - GoalAlign
+        - PathAlign
+        - PathDist
+        - GoalDist
+      BaseObstacle.scale: 0.02
+      PathAlign.scale: 24.0
+      PathAlign.forward_point_distance: 0.10
+      GoalAlign.scale: 18.0
+      GoalAlign.forward_point_distance: 0.10
+      PathDist.scale: 24.0
+      GoalDist.scale: 20.0
+      RotateToGoal.scale: 24.0
+      RotateToGoal.slowing_factor: 5.0
+      RotateToGoal.lookahead_time: -1.0
+
+bt_navigator:
+  ros__parameters:
+    global_frame: odom
+    robot_base_frame: base_footprint
+    odom_topic: /yor/odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    # Humble constructs both navigator plugins during activation, so both
+    # defaults must be valid even though dock_to_visible_object only calls
+    # NavigateToPose. Both use standard Nav2 costmap-clear/Wait recoveries but
+    # deliberately omit BackUp and Spin because there is no rear sensor.
+    default_nav_to_pose_bt_xml: /home/yor/codefield/YOR/yor_agent/ros2_ws/src/yor_nav2_bridge/behavior_trees/navigate_no_reverse.xml
+    default_nav_through_poses_bt_xml: /home/yor/codefield/YOR/yor_agent/ros2_ws/src/yor_nav2_bridge/behavior_trees/navigate_through_poses_no_reverse.xml
+    plugin_lib_names:
+      - nav2_compute_path_to_pose_action_bt_node
+      - nav2_compute_path_through_poses_action_bt_node
+      - nav2_follow_path_action_bt_node
+      - nav2_wait_action_bt_node
+      - nav2_clear_costmap_service_bt_node
+      - nav2_goal_updated_condition_bt_node
+      - nav2_rate_controller_bt_node
+      - nav2_recovery_node_bt_node
+      - nav2_pipeline_sequence_bt_node
+      - nav2_round_robin_node_bt_node
+
+behavior_server:
+  ros__parameters:
+    costmap_topic: local_costmap/costmap_raw
+    footprint_topic: local_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["wait"]
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    global_frame: odom
+    robot_base_frame: base_footprint
+    transform_tolerance: 0.30
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 0.35
+    min_rotational_vel: 0.20
+    rotational_acc_lim: 0.80
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 8.0
+      publish_frequency: 4.0
+      global_frame: odom
+      robot_base_frame: base_footprint
+      rolling_window: true
+      width: 4
+      height: 4
+      resolution: 0.05
+      # Generated at startup from primitive_config.yaml. Launching this
+      # template without scripts/start_nav2.sh intentionally fails closed.
+      footprint: "__GENERATED_FROM_PRIMITIVE_CONFIG__"
+      plugins: ["voxel_layer", "inflation_layer"]
+      voxel_layer:
+        plugin: "nav2_costmap_2d::VoxelLayer"
+        enabled: true
+        publish_voxel_map: true
+        origin_z: 0.0
+        z_resolution: 0.10
+        z_voxels: 16
+        max_obstacle_height: 1.45
+        # Reject isolated ZED floor-noise returns: a 2-D cell is occupied only
+        # after at least two distinct 10 cm height voxels are marked.
+        mark_threshold: 1
+        observation_sources: zed_points
+        zed_points:
+          topic: /yor/zed/points
+          data_type: PointCloud2
+          clearing: true
+          marking: true
+          min_obstacle_height: 0.10
+          max_obstacle_height: 1.45
+          obstacle_max_range: 4.5
+          obstacle_min_range: 0.10
+          raytrace_max_range: 5.0
+          raytrace_min_range: 0.10
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # Generated as robot_radius_m + 0.30 m.
+        inflation_radius: "__GENERATED_FROM_PRIMITIVE_CONFIG__"
+        cost_scaling_factor: 3.0
+      always_send_full_costmap: true
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 4.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_footprint
+      rolling_window: true
+      # A 20 m rolling window covers approximately 10 m in each direction
+      # around the robot. This is intentionally larger than the local map.
+      width: 20
+      height: 20
+      resolution: 0.05
+      footprint: "__GENERATED_FROM_PRIMITIVE_CONFIG__"
+      track_unknown_space: true
+      plugins: ["voxel_layer", "inflation_layer"]
+      voxel_layer:
+        plugin: "nav2_costmap_2d::VoxelLayer"
+        enabled: true
+        publish_voxel_map: false
+        origin_z: 0.0
+        z_resolution: 0.10
+        z_voxels: 16
+        max_obstacle_height: 1.45
+        # Match the local map: one intermittent height voxel is not enough to
+        # make a permanent global obstacle column.
+        mark_threshold: 1
+        observation_sources: zed_points
+        zed_points:
+          topic: /yor/zed/points
+          data_type: PointCloud2
+          clearing: true
+          marking: true
+          min_obstacle_height: 0.10
+          max_obstacle_height: 1.45
+          obstacle_max_range: 19.5
+          obstacle_min_range: 0.10
+          raytrace_max_range: 20.0
+          raytrace_min_range: 0.10
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        inflation_radius: "__GENERATED_FROM_PRIMITIVE_CONFIG__"
+        cost_scaling_factor: 3.0
+      always_send_full_costmap: true
+
+velocity_smoother:
+  ros__parameters:
+    smoothing_frequency: 20.0
+    scale_velocities: false
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.18, 0.18, 0.35]
+    min_velocity: [0.0, -0.18, -0.35]
+    max_accel: [0.30, 0.30, 0.80]
+    max_decel: [-0.30, -0.30, -0.80]
+    odom_topic: /yor/odom
+    odom_duration: 0.10
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 0.20
+
+# Two chained collision monitors, because Humble evaluates every polygon in a
+# node against the pooled points of all its sources: a single 2-D polygon
+# charges a support surface against grippers that pass above it, which stopped
+# docking short of every one of them (2026-09-07). The structure monitor carries the
+# body outline the chassis, lift column and camera head stand in, and sees the
+# whole cloud; the arms monitor carries the arms' envelope and sees only the
+# points the ZED bridge measured at arm height. Same split, same margins as
+# robot/footprint_clearance.py uses for the direct primitives.
+collision_monitor_structure:
+  ros__parameters:
+    base_frame_id: base_footprint
+    odom_frame_id: odom
+    cmd_vel_in_topic: cmd_vel
+    cmd_vel_out_topic: cmd_vel_structure_safe
+    transform_tolerance: 0.30
+    source_timeout: 0.50
+    stop_pub_timeout: 1.0
+    base_shift_correction: true
+    polygons: ["StructureStop", "StructureApproach"]
+    StructureStop:
+      type: "polygon"
+      action_type: "stop"
+      # Generated as one flat double array (x1,y1,...) for Humble.
+      points: "__GENERATED_FROM_PRIMITIVE_CONFIG__"
+      max_points: 3
+      visualize: true
+      polygon_pub_topic: /yor/collision_monitor/structure_stop_zone
+      enabled: true
+    StructureApproach:
+      type: "polygon"
+      action_type: "approach"
+      # An approach polygon can only take a footprint topic (Humble's
+      # Polygon::getParameters returns before reading points for APPROACH),
+      # so the ZED bridge publishes the body outline on this topic.
+      footprint_topic: /yor/collision_monitor/structure_footprint
+      time_before_collision: 1.2
+      simulation_time_step: 0.10
+      max_points: 5
+      visualize: true
+      polygon_pub_topic: /yor/collision_monitor/structure_footprint_zone
+      enabled: true
+    observation_sources: ["zed_points"]
+    zed_points:
+      type: "pointcloud"
+      topic: /yor/zed/points
+      min_height: 0.10
+      max_height: 1.45
+      enabled: true
+
+collision_monitor_arms:
+  ros__parameters:
+    base_frame_id: base_footprint
+    odom_frame_id: odom
+    cmd_vel_in_topic: cmd_vel_structure_safe
+    cmd_vel_out_topic: /yor/cmd_vel_safe
+    transform_tolerance: 0.30
+    source_timeout: 0.50
+    stop_pub_timeout: 1.0
+    base_shift_correction: true
+    polygons: ["ArmsStop", "ArmsApproach"]
+    ArmsStop:
+      type: "polygon"
+      # Slowdown, not stop. This polygon spans the arms' forward envelope, so
+      # it necessarily contains the support surface the robot reaches over
+      # whenever it works at one; as a stop zone that zeroed every command,
+      # rotation included, and the base could not finish a docking goal it had
+      # already reached in position. The hard stop for anything inside the
+      # chassis outline remains StructureStop, ArmsApproach still brakes on
+      # predicted contact, and the direct primitives keep their own swept
+      # footprint gate.
+      action_type: "slowdown"
+      slowdown_ratio: 0.3
+      # Generated as one flat double array (x1,y1,...) for Humble.
+      points: "__GENERATED_FROM_PRIMITIVE_CONFIG__"
+      max_points: 3
+      visualize: true
+      polygon_pub_topic: /yor/collision_monitor/stop_zone
+      enabled: true
+    ArmsApproach:
+      type: "polygon"
+      action_type: "approach"
+      footprint_topic: /local_costmap/published_footprint
+      time_before_collision: 1.2
+      simulation_time_step: 0.10
+      max_points: 5
+      visualize: true
+      polygon_pub_topic: /yor/collision_monitor/footprint
+      enabled: true
+    observation_sources: ["zed_points_arms"]
+    zed_points_arms:
+      type: "pointcloud"
+      # Height band already applied by the ZED bridge; it republishes the
+      # whole cloud here whenever it cannot place the arms.
+      topic: /yor/zed/points_arms
+      min_height: 0.10
+      max_height: 1.45
+      enabled: true
